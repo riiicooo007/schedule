@@ -420,3 +420,25 @@ details.panel[open] > summary { margin-bottom: 10px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ============================================================
+   Lịch tháng nhỏ
+   ============================================================ */
+.mini-cal { user-select: none; }
+.mini-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.mini-head .icon-btn { width: 30px; height: 30px; }
+.mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.mini-dow { text-align: center; font-size: 11px; font-weight: 700; color: var(--muted); padding: 2px 0; }
+.mini-day {
+  position: relative; height: 32px; border: 0; border-radius: 8px; background: transparent;
+  cursor: pointer; font-weight: 600; font-size: 13px;
+}
+.mini-day:hover { background: var(--surface-hover); }
+.mini-day.outside { color: var(--muted); opacity: .55; }
+.mini-day.in-week { background: var(--primary-soft); }
+.mini-day.today { background: var(--primary); color: var(--on-primary); opacity: 1; }
+.mini-dot {
+  position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px;
+  border-radius: 50%; background: var(--primary);
+}
+.mini-day.today .mini-dot { background: var(--on-primary); }
