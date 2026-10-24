@@ -79,6 +79,27 @@ const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const validDateStr = (s) => typeof s === 'string' && RE_DATE.test(s) && toISODate(parseISODate(s)) === s;
 
+const NOTE_MAX = 500; // số ký tự tối đa của một ghi chú
+const SHORTCUTS = [
+  [['←'], 'Tuần trước'],
+  [['→'], 'Tuần sau'],
+  [['T'], 'Về hôm nay'],
+  [['N'], 'Thêm sự kiện'],
+  [['?'], 'Mở bảng phím tắt này'],
+  [['Esc'], 'Đóng hộp thoại (hoặc hủy khi đang kéo thẻ)'],
+];
+
+// Ghi chú theo từng buổi: { 'YYYY-MM-DD': { v: 'nội dung', t: thời điểm sửa } }
+function sanitizeNotes(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  Object.keys(raw).forEach((k) => {
+    const x = raw[k];
+    if (validDateStr(k) && x && typeof x.v === 'string' && Number.isFinite(x.t)) out[k] = { v: x.v.slice(0, NOTE_MAX), t: x.t };
+  });
+  return out;
+}
+
 // Dấu "đã làm" theo từng ngày: { 'YYYY-MM-DD': { v: true/false, t: thời điểm bấm } }
 function sanitizeDone(raw) {
   const out = {};
@@ -121,6 +142,7 @@ function sanitizeEvent(raw) {
     kind: raw.kind,
     exceptions: {},
     done: sanitizeDone(raw.done),
+    notes: sanitizeNotes(raw.notes),
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
   if (raw.kind === 'once') {
@@ -230,10 +252,11 @@ function mergeRemote(local, remoteList) {
       if (!r0.event) return;
       const remoteWins = ts > cur.ts;
       const doneM = mergeDone(cur.ev.done, r0.event.done);
-      const diffRemote = !sameDone(doneM, r0.event.done);
-      const diffLocal = !sameDone(doneM, cur.ev.done);
+      const notesM = mergeDone(cur.ev.notes, r0.event.notes);
+      const diffRemote = !sameDone(doneM, r0.event.done) || !sameDone(notesM, r0.event.notes);
+      const diffLocal = !sameDone(doneM, cur.ev.done) || !sameDone(notesM, cur.ev.notes);
       if (!remoteWins && !diffLocal) return;
-      const out = { ...(remoteWins ? r0.event : cur.ev), done: doneM };
+      const out = { ...(remoteWins ? r0.event : cur.ev), done: doneM, notes: notesM };
       if (diffRemote) out.updatedAt = Date.now(); // máy chủ thiếu vài dấu tích: đẩy bản đầy đủ lên
       best.set(r.id, { ts: out.updatedAt, dead: false, ev: out });
       changedEvents = true;
@@ -278,6 +301,7 @@ function occurrencesInRange(s, fromD, toD) {
       startTime: o ? o.startTime : s.startTime, endTime: o ? o.endTime : s.endTime,
       remindMin: o ? o.remindMin : s.remindMin, overridden: !!o,
       done: !!(s.done && s.done[iso] && s.done[iso].v),
+      note: (s.notes && s.notes[iso] && s.notes[iso].v) || '',
     });
   };
   if (s.kind === 'once') {
@@ -519,7 +543,7 @@ function initForm(mode, series) {
       title: '', category: 'study', kind: 'once', date,
       weekdays: [wdIndex(parseISODate(date))],
       rangeStart: date, rangeEnd: toISODate(addMonths(parseISODate(date), 4)),
-      startTime: mode.prefill.startTime, endTime: mode.prefill.endTime, remindMin: 15,
+      startTime: mode.prefill.startTime, endTime: mode.prefill.endTime, remindMin: 15, note: '',
     };
   }
   const s = series;
@@ -535,6 +559,7 @@ function initForm(mode, series) {
     rangeStart: s.kind === 'weekly' ? s.rangeStart : date,
     rangeEnd: s.kind === 'weekly' ? s.rangeEnd : toISODate(addMonths(parseISODate(date), 4)),
   };
+  f.note = (s.notes && s.notes[od] && s.notes[od].v) || '';
   if (mode.scope === 'future') f.rangeStart = od;
   return f;
 }
@@ -565,7 +590,8 @@ function formToSeries(f, base) {
   const s = {
     id: base ? base.id : uid(), title: f.title.trim(), category: f.category,
     startTime: f.startTime, endTime: f.endTime, remindMin: Number(f.remindMin),
-    kind: f.kind, exceptions: {}, done: base && base.done ? { ...base.done } : {}, updatedAt: Date.now(),
+    kind: f.kind, exceptions: {}, done: base && base.done ? { ...base.done } : {},
+    notes: base && base.notes ? { ...base.notes } : {}, updatedAt: Date.now(),
   };
   if (f.kind === 'once') {
     s.date = f.date;
@@ -579,7 +605,30 @@ function formToSeries(f, base) {
       });
     }
   }
+  if (f.kind === 'once' && base && base.kind === 'once' && base.date && base.date !== f.date) {
+    ['done', 'notes'].forEach((m) => { if (s[m][base.date]) { s[m][f.date] = s[m][base.date]; delete s[m][base.date]; } });
+  }
   return s;
+}
+
+// Ngày mà ghi chú trong hộp thoại gắn vào: sự kiện một lần là ngày của nó; lịch lặp là buổi đang sửa
+// (khi thêm mới thì là buổi đầu tiên của chuỗi)
+function noteDateFor(form, mode) {
+  if (form.kind === 'once') return form.date;
+  if (mode.type === 'edit') return mode.occDate;
+  for (let i = 0; i < 7; i += 1) {
+    const d = addDays(parseISODate(form.rangeStart), i);
+    if (form.weekdays.includes(wdIndex(d))) return toISODate(d);
+  }
+  return form.rangeStart;
+}
+
+// Trả về bản sao của series với ghi chú của một ngày đã cập nhật (nội dung rỗng = xóa ghi chú)
+function withNote(series, date, text, t) {
+  const cur = series.notes && series.notes[date];
+  const v = String(text || '').trim().slice(0, NOTE_MAX);
+  if ((cur ? cur.v : '') === v) return series;
+  return { ...series, notes: { ...(series.notes || {}), [date]: { v, t } }, updatedAt: t };
 }
 
 function Field({ id, label, error, hint, children }) {
@@ -600,6 +649,8 @@ function EventModal({ mode, series, onSave, onDelete, onClose }) {
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
   const isEdit = mode.type === 'edit';
+  const noteDate = noteDateFor(form, mode);
+  const noteLabel = validDateStr(noteDate) ? `Ghi chú cho buổi ngày ${fmtDMY(noteDate)}` : 'Ghi chú';
   const lockKind = isEdit && mode.scope !== 'all';
   const lockDays = isEdit && mode.scope === 'this';
   const lockRangeStart = isEdit && mode.scope === 'future';
@@ -721,6 +772,11 @@ function EventModal({ mode, series, onSave, onDelete, onClose }) {
           </select>
         </Field>
 
+        <Field id={`${base}-note`} label={noteLabel} hint="Mỗi buổi có ghi chú riêng. Với lịch lặp, ghi chú chỉ gắn vào buổi này.">
+          <textarea id={`${base}-note`} rows={3} maxLength={NOTE_MAX} value={form.note}
+            placeholder="Ví dụ: ôn chương 3, làm bài tập CSDL" onChange={(e) => set({ note: e.target.value })} />
+        </Field>
+
         <div className="dialog-foot">
           {isEdit && (
             <button type="button" className="btn btn-danger" onClick={() => onDelete(mode)}>
@@ -762,11 +818,91 @@ function ToastHost({ toasts, onDismiss }) {
 /* ============================================================
    Component: WeekGrid (lưới thời gian biểu theo tuần)
    ============================================================ */
-function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onToggleDone, onShow24h }) {
+function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onToggleDone, onMoveOccurrence, onShow24h }) {
   const cfg = HOUR_OPTIONS[hoursKey] || HOUR_OPTIONS['6-23'];
   const gridStart = cfg.start * 60;
   const gridEnd = cfg.end * 60;
   const scrollRef = useRef(null);
+  // ----- Kéo thả (chuột/bút; màn hình cảm ứng vẫn mở hộp thoại để sửa) -----
+  const [drag, setDrag] = useState(null);     // { key, mode: 'move' | 'resize', preview: { iso, s, e } }
+  const dragRef = useRef(null);
+  const suppressClick = useRef(false);        // bỏ qua cú click ngay sau khi thả
+  const latest = useRef({});
+  latest.current = { onMoveOccurrence, gridStart };
+  const dnd = useRef(null);
+  if (!dnd.current) {
+    const STEP = 30; // phút
+    const finish = (commit) => {
+      const st = dragRef.current;
+      window.removeEventListener('pointermove', dnd.current.move);
+      window.removeEventListener('pointerup', dnd.current.up);
+      window.removeEventListener('pointercancel', dnd.current.cancel);
+      window.removeEventListener('keydown', dnd.current.key);
+      document.body.classList.remove('dragging-card');
+      dragRef.current = null;
+      setDrag(null);
+      if (!st || !st.active) return;
+      suppressClick.current = true;
+      setTimeout(() => { suppressClick.current = false; }, 60);
+      const p = st.preview;
+      if (commit && p && (p.iso !== st.it.date || p.s !== st.it.s || p.e !== st.it.e)) {
+        latest.current.onMoveOccurrence(st.it.seriesId, st.it.date, { date: p.iso, startTime: minToTime(p.s), endTime: minToTime(p.e) });
+      }
+    };
+    const move = (e) => {
+      const st = dragRef.current;
+      const root = scrollRef.current;
+      if (!st || !root) return;
+      if (!st.active) {
+        if (Math.abs(e.clientX - st.x0) + Math.abs(e.clientY - st.y0) < 6) return; // chưa đủ xa: coi là click
+        st.active = true;
+        document.body.classList.add('dragging-card');
+      }
+      const gs = latest.current.gridStart;
+      const sr = root.getBoundingClientRect();
+      if (e.clientY < sr.top + 48) root.scrollTop -= 14; // tự cuộn khi kéo sát mép
+      else if (e.clientY > sr.bottom - 48) root.scrollTop += 14;
+      const cols = [...root.querySelectorAll('.day-col')];
+      if (!cols.length) return;
+      let col = cols.find((x) => { const r = x.getBoundingClientRect(); return e.clientX >= r.left && e.clientX < r.right; });
+      if (!col) col = e.clientX < cols[0].getBoundingClientRect().left ? cols[0] : cols[cols.length - 1];
+      const rect = col.getBoundingClientRect();
+      const minsAt = (y) => gs + ((y - rect.top) / HOUR_H) * 60;
+      let iso = col.dataset.iso;
+      let s0 = st.it.s;
+      let e0 = st.it.e;
+      if (st.mode === 'move') {
+        let ns = Math.round(minsAt(e.clientY - st.grab) / STEP) * STEP;
+        ns = Math.max(gs, ns);
+        if (ns + st.dur > 1439) ns = Math.floor((1439 - st.dur) / STEP) * STEP;
+        s0 = ns;
+        e0 = ns + st.dur;
+      } else {
+        iso = st.it.date; // đổi kích thước chỉ đổi giờ kết thúc, giữ nguyên ngày
+        e0 = Math.max(st.it.s + STEP, Math.min(Math.round(minsAt(e.clientY) / STEP) * STEP, 1439));
+      }
+      st.preview = { iso, s: s0, e: e0 };
+      setDrag({ key: st.it.key, mode: st.mode, preview: st.preview });
+    };
+    dnd.current = {
+      move,
+      up: () => finish(true),
+      cancel: () => finish(false),
+      key: (e) => { if (e.key === 'Escape') finish(false); },
+    };
+  }
+  useEffect(() => () => { if (dnd.current) dnd.current.cancel(); }, []);
+  const startDrag = (e, it, mode) => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    if (e.target.closest && e.target.closest('.ev-check')) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    dragRef.current = { mode, it, x0: e.clientX, y0: e.clientY, grab: mode === 'move' ? e.clientY - r.top : 0, dur: it.e - it.s, active: false, preview: null };
+    window.addEventListener('pointermove', dnd.current.move);
+    window.addEventListener('pointerup', dnd.current.up);
+    window.addEventListener('pointercancel', dnd.current.cancel);
+    window.addEventListener('keydown', dnd.current.key);
+  };
+
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
   const hours = useMemo(() => Array.from({ length: cfg.end - cfg.start }, (_, i) => cfg.start + i), [cfg]);
 
@@ -812,6 +948,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
   }, [scrollSignal, hoursKey]);
 
   const handleColClick = (e, iso) => {
+    if (suppressClick.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const y = e.clientY - rect.top;
     let mins = gridStart + Math.floor((y / HOUR_H) * 2) * 30; // làm tròn xuống 30 phút
@@ -866,7 +1003,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
             {model.cols.map((col, ci) => {
               const isToday = col.iso === todayISO;
               return (
-                <div key={col.iso} className={`day-col${isToday ? ' today' : ''}`} onClick={(e) => handleColClick(e, col.iso)}>
+                <div key={col.iso} data-iso={col.iso} className={`day-col${isToday ? ' today' : ''}`} onClick={(e) => handleColClick(e, col.iso)}>
                   {col.laid.map((it) => {
                     const top = ((it.s - gridStart) / 60) * HOUR_H;
                     const h = Math.max(((it.e - it.s) / 60) * HOUR_H - 2, 20);
@@ -874,15 +1011,16 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
                     const compact = h < 38;
                     const started = dateTimeMs(it.date, it.startTime) <= now.getTime();
                     return (
-                      <div key={it.key} className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}`}
+                      <div key={it.key} className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}${drag && drag.key === it.key ? ' dragging' : ''}`}
+                        onPointerDown={(e) => startDrag(e, it, 'move')}
                         style={{
                           animationDelay: `${ci * 0.05}s`, top, height: h, left: `calc(${it.col * w}% + 2px)`, width: `calc(${w}% - 4px)`,
                           '--ev-color': `var(--cat-${it.category})`, '--ev-bg': `var(--cat-${it.category}-bg)`,
                         }}>
                         <button type="button" className="ev-open"
-                          title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}${it.done ? '\n✓ Đã làm' : ''}`}
-                          aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${it.conflict ? ', trùng giờ' : ''}${it.done ? ', đã làm' : ''}`}
-                          onClick={(e) => { e.stopPropagation(); onCardClick(it.seriesId, it.date); }}>
+                          title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}${it.done ? '\n✓ Đã làm' : ''}${it.note ? '\n' + it.note : ''}`}
+                          aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${it.conflict ? ', trùng giờ' : ''}${it.done ? ', đã làm' : ''}${it.note ? ', có ghi chú' : ''}`}
+                          onClick={(e) => { e.stopPropagation(); if (suppressClick.current) return; onCardClick(it.seriesId, it.date); }}>
                           <span className="ev-title">{it.title}</span>
                           <span className="ev-time">{it.startTime} – {it.endTime}</span>
                           {h >= 64 && (
@@ -890,9 +1028,11 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
                               {it.kind === 'weekly' && <Icon name="Repeat" size={12} />}
                               {it.remindMin > 0 && !it.done && <Icon name="Bell" size={12} />}
                               {it.conflict && <Icon name="TriangleAlert" size={12} />}
+                              {it.note && <Icon name="FileText" size={12} />}
                               {catLabel(it.category)}
                             </span>
                           )}
+                          {h >= 96 && it.note && <span className="ev-note">{it.note}</span>}
                         </button>
                         {(started || it.done) && (
                         <button type="button" role="checkbox" aria-checked={it.done} className={`ev-check${it.done ? ' on' : ''}`}
@@ -902,9 +1042,17 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
                           {it.done && <Icon name="Check" size={12} />}
                         </button>
                         )}
+                        <div className="ev-resize" aria-hidden="true" title="Kéo để đổi giờ kết thúc"
+                          onPointerDown={(e) => { e.stopPropagation(); startDrag(e, it, 'resize'); }} />
                       </div>
                     );
                   })}
+                  {drag && drag.preview && drag.preview.iso === col.iso && (
+                    <div className="event-ghost" style={{
+                      top: ((drag.preview.s - gridStart) / 60) * HOUR_H,
+                      height: Math.max(((drag.preview.e - drag.preview.s) / 60) * HOUR_H - 2, 20),
+                    }}>{minToTime(drag.preview.s)} – {minToTime(drag.preview.e)}</div>
+                  )}
                   {isToday && nowVisible && (
                     <div className="now-line" style={{ top: ((nowMin - gridStart) / 60) * HOUR_H }}><span className="now-dot" /></div>
                   )}
@@ -1150,6 +1298,8 @@ function App() {
   const [now, setNow] = useState(() => new Date());
   const [scrollSignal, setScrollSignal] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const keyActions = useRef({}); // các hành động của phím tắt (luôn là bản mới nhất)
   // PC: thanh bên có thể ẩn/hiện (nhớ lại lựa chọn). Điện thoại: thanh bên là ngăn kéo.
   const [sideCollapsed, setSideCollapsed] = useState(() => {
     try { return localStorage.getItem('tp_side_collapsed') === '1'; } catch (e) { return false; }
@@ -1497,16 +1647,18 @@ function App() {
 
   const saveForm = (form, mode) => {
     const nowTs = Date.now();
+    const noteDate = noteDateFor(form, mode);
+    const noteText = form.note || '';
     mutateEvents((list) => {
-      if (mode.type === 'new') return [...list, formToSeries(form, null)];
+      if (mode.type === 'new') return [...list, withNote(formToSeries(form, null), noteDate, noteText, nowTs)];
       const idx = list.findIndex((s) => s.id === mode.seriesId);
       if (idx < 0) return list;
       const s = list[idx];
       const next = [...list];
       if (mode.scope === 'all') {
-        next[idx] = formToSeries(form, s);
+        next[idx] = withNote(formToSeries(form, s), noteDate, noteText, nowTs);
       } else if (mode.scope === 'this') {
-        next[idx] = {
+        next[idx] = withNote({
           ...s, updatedAt: nowTs,
           exceptions: {
             ...s.exceptions,
@@ -1515,7 +1667,7 @@ function App() {
               endTime: form.endTime, remindMin: Number(form.remindMin),
             },
           },
-        };
+        }, noteDate, noteText, nowTs);
       } else {
         // 'future': tách chuỗi thành hai phần
         const prevEnd = toISODate(addDays(parseISODate(mode.occDate), -1));
@@ -1529,8 +1681,11 @@ function App() {
         const keptDone = {};
         Object.keys(s.done || {}).forEach((k) => { if (k < mode.occDate) keptDone[k] = s.done[k]; else tail.done[k] = s.done[k]; });
         Object.keys(moved).forEach((k) => { if (k >= tail.rangeStart && k <= tail.rangeEnd) tail.exceptions[k] = 'deleted'; });
-        if (prevEnd < s.rangeStart) next.splice(idx, 1, tail);
-        else next.splice(idx, 1, { ...s, rangeEnd: prevEnd, exceptions: kept, done: keptDone, updatedAt: nowTs }, tail);
+        const keptNotes = {};
+        Object.keys(s.notes || {}).forEach((k) => { if (k < mode.occDate) keptNotes[k] = s.notes[k]; else tail.notes[k] = s.notes[k]; });
+        const tailF = withNote(tail, noteDate, noteText, nowTs);
+        if (prevEnd < s.rangeStart) next.splice(idx, 1, tailF);
+        else next.splice(idx, 1, { ...s, rangeEnd: prevEnd, exceptions: kept, done: keptDone, notes: keptNotes, updatedAt: nowTs }, tailF);
       }
       return next;
     });
@@ -1658,6 +1813,40 @@ function App() {
       return { ...s, done: { ...(s.done || {}), [date]: { v: !cur, t } }, updatedAt: t };
     }));
   };
+  // Kéo thả / đổi kích thước một buổi: luôn chỉ áp dụng cho buổi này
+  const moveOccurrence = (seriesId, fromDate, t) => {
+    const s0 = dataRef.current.events.find((x) => x.id === seriesId);
+    if (!s0) return;
+    const occ = occurrencesInRange(s0, parseISODate(fromDate), parseISODate(fromDate))[0];
+    if (!occ) return;
+    const ts = Date.now();
+    mutateEvents((list) => list.flatMap((s) => {
+      if (s.id !== seriesId) return [s];
+      if (s.kind === 'once') {
+        // Sự kiện một lần: đổi thẳng ngày/giờ, dấu tích và ghi chú đi theo ngày mới
+        const moveKey = (m) => {
+          const out = { ...(m || {}) };
+          if (t.date !== fromDate && out[fromDate]) { out[t.date] = out[fromDate]; delete out[fromDate]; }
+          return out;
+        };
+        return [{ ...s, date: t.date, startTime: t.startTime, endTime: t.endTime, done: moveKey(s.done), notes: moveKey(s.notes), updatedAt: ts }];
+      }
+      if (t.date === fromDate) {
+        // Lịch lặp, chỉ đổi giờ: ghi đè riêng buổi này
+        return [{ ...s, updatedAt: ts, exceptions: { ...s.exceptions, [fromDate]: {
+          title: occ.title, category: occ.category, startTime: t.startTime, endTime: t.endTime, remindMin: occ.remindMin } } }];
+      }
+      // Lịch lặp, sang ngày khác: bỏ buổi gốc và tạo sự kiện "một lần" ở ngày mới (mang theo dấu tích và ghi chú)
+      const carry = (m) => (m && m[fromDate] ? { [t.date]: { ...m[fromDate], t: ts } } : {});
+      const moved = {
+        id: uid(), title: occ.title, category: occ.category, startTime: t.startTime, endTime: t.endTime,
+        remindMin: occ.remindMin, kind: 'once', date: t.date, exceptions: {}, done: carry(s.done), notes: carry(s.notes), updatedAt: ts,
+      };
+      return [{ ...s, updatedAt: ts, exceptions: { ...s.exceptions, [fromDate]: 'deleted' } }, moved];
+    }));
+    pushToast({ kind: 'success', title: 'Đã cập nhật buổi này',
+      message: `${occ.title} · ${t.startTime}–${t.endTime}${t.date !== fromDate ? ` · ${fmtDMY(t.date)}` : ''}` });
+  };
   // Đổi tuần kèm hướng trượt: tuần sau trượt từ phải, tuần trước trượt từ trái
   const goWeek = (next) => { setSlideDir(next.getTime() >= weekStart.getTime() ? 'next' : 'prev'); setWeekStart(next); };
   const shiftWeek = (n) => goWeek(addDays(weekStart, n * 7));
@@ -1665,6 +1854,27 @@ function App() {
   // Bấm một ngày trong lịch tháng: nhảy tới tuần chứa ngày đó (điện thoại thì đóng ngăn kéo)
   const pickDate = (d) => { goWeek(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
   const weekLabel = `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
+  keyActions.current = { prev: () => shiftWeek(-1), next: () => shiftWeek(1), today: goToday, add: () => openNew(), help: () => setShortcutsOpen(true) };
+
+  // Phím tắt toàn trang (không hoạt động khi đang gõ hoặc khi có hộp thoại mở)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const t = e.target;
+      const tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      const k = e.key;
+      const a = keyActions.current;
+      if (k === 'ArrowLeft') { e.preventDefault(); a.prev(); }
+      else if (k === 'ArrowRight') { e.preventDefault(); a.next(); }
+      else if (k === 't' || k === 'T') { e.preventDefault(); a.today(); }
+      else if (k === 'n' || k === 'N') { e.preventDefault(); a.add(); }
+      else if (k === '?') { e.preventDefault(); a.help(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   const modalSeries = modal && modal.mode.type === 'edit' ? data.events.find((s) => s.id === modal.mode.seriesId) : null;
 
@@ -1686,6 +1896,7 @@ function App() {
             <select aria-label="Khung giờ hiển thị" value={settings.hours} onChange={(e) => updateSettings({ hours: e.target.value })}>
               {Object.keys(HOUR_OPTIONS).map((k) => <option key={k} value={k}>{HOUR_OPTIONS[k].label}</option>)}
             </select>
+            <button type="button" className="icon-btn bordered" aria-label="Phím tắt (?)" title="Phím tắt (?)" onClick={() => setShortcutsOpen(true)}><Icon name="Keyboard" /></button>
             <button type="button" className="icon-btn bordered" aria-label={resolvedTheme === 'dark' ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
               onClick={() => updateSettings({ theme: resolvedTheme === 'dark' ? 'light' : 'dark' })}>
               <Icon name={resolvedTheme === 'dark' ? 'Sun' : 'Moon'} />
@@ -1698,7 +1909,7 @@ function App() {
         <div className="grid-wrap">
           <WeekGrid weekStart={weekStart} events={data.events} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
             onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
-            onCardClick={openOccurrence} onToggleDone={toggleDone} onShow24h={() => updateSettings({ hours: '0-23' })} />
+            onCardClick={openOccurrence} onToggleDone={toggleDone} onMoveOccurrence={moveOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
         </div>
       </div>
 
@@ -1719,6 +1930,24 @@ function App() {
           onPick={(scope) => { setModal({ mode: { type: 'edit', seriesId: scopeAsk.seriesId, occDate: scopeAsk.date, scope } }); setScopeAsk(null); }} />
       )}
       {confirm && <ConfirmDialog {...confirm} onClose={() => setConfirm(null)} />}
+      {shortcutsOpen && (
+        <Dialog title="Phím tắt và thao tác nhanh" onClose={() => setShortcutsOpen(false)}>
+          <table className="kbd-table">
+            <tbody>
+              {SHORTCUTS.map(([keys, desc]) => (
+                <tr key={desc}><td>{keys.map((k) => <kbd key={k}>{k}</kbd>)}</td><td>{desc}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint" style={{ marginTop: 12 }}>
+            Bằng chuột: kéo một thẻ để đổi ngày hoặc giờ (bước 30 phút), kéo mép dưới thẻ để đổi giờ kết thúc. Với lịch lặp, thao tác chỉ áp dụng cho buổi đó.
+            Phím tắt không hoạt động khi bạn đang gõ trong ô nhập hoặc khi có hộp thoại mở.
+          </p>
+          <div className="dialog-foot" style={{ marginTop: 14 }}>
+            <button type="button" className="btn btn-primary" data-autofocus onClick={() => setShortcutsOpen(false)}>Đã hiểu</button>
+          </div>
+        </Dialog>
+      )}
       {importAsk && (
         <Dialog title="Nhập dữ liệu" onClose={() => setImportAsk(null)}>
           <p>File <strong>{importAsk.fileName}</strong> có <strong>{importAsk.events.length}</strong> sự kiện hợp lệ.</p>
