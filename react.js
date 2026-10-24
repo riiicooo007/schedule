@@ -11,6 +11,8 @@ const HOUR_H = 56;               // chiều cao 1 giờ trên lưới (px) — k
 const SYNC_HORIZON_DAYS = 120;   // số ngày tới được gửi lên Apps Script
 const MAX_RANGE_DAYS = 366;      // khoảng lặp tối đa
 const NOTIFIED_TTL_MS = 7 * 24 * 3600 * 1000;
+const TOMBSTONE_TTL_MS = 90 * 24 * 3600 * 1000; // giữ dấu xóa 90 ngày để thiết bị khác xóa theo
+const POLL_MS = 120000;                         // tự tải lịch từ máy chủ mỗi 2 phút
 
 const WEEKDAYS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
 const WEEKDAYS_LONG = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
@@ -147,7 +149,14 @@ function migrateData(p) {
   st.syncUrl = typeof st.syncUrl === 'string' ? st.syncUrl : '';
   st.syncToken = typeof st.syncToken === 'string' ? st.syncToken : '';
   st.lastSync = Number.isFinite(st.lastSync) ? st.lastSync : null;
-  return { version: 1, updatedAt: Number(p && p.updatedAt) || 0, events, settings: st };
+  const tombstones = {};
+  if (p && p.tombstones && typeof p.tombstones === 'object') {
+    Object.keys(p.tombstones).forEach((k) => {
+      const v = Number(p.tombstones[k]);
+      if (k && k.length <= 64 && Number.isFinite(v) && v > Date.now() - TOMBSTONE_TTL_MS) tombstones[k] = v;
+    });
+  }
+  return { version: 1, updatedAt: Number(p && p.updatedAt) || 0, events, tombstones, settings: st };
 }
 
 function loadData() {
@@ -155,7 +164,7 @@ function loadData() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return migrateData(JSON.parse(raw));
   } catch (e) { console.warn('Không đọc được dữ liệu đã lưu', e); }
-  return { version: 1, updatedAt: 0, events: [], settings: { ...DEFAULT_SETTINGS } };
+  return { version: 1, updatedAt: 0, events: [], tombstones: {}, settings: { ...DEFAULT_SETTINGS } };
 }
 
 function loadNotified() {
@@ -165,6 +174,54 @@ function saveNotified(map) {
   const cutoff = Date.now() - NOTIFIED_TTL_MS;
   Object.keys(map).forEach((k) => { if (map[k] < cutoff) delete map[k]; });
   try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify(map)); } catch (e) { /* bỏ qua */ }
+}
+
+/* ---------- Đồng bộ nhiều thiết bị: gộp theo từng sự kiện ---------- */
+// Mỗi sự kiện có thời điểm sửa (updatedAt); sự kiện bị xóa để lại "dấu xóa" cùng thời điểm xóa.
+// Với mỗi id, bản có thời điểm lớn hơn thắng. Bằng nhau thì giữ bản trên máy này.
+function toRemoteSeries(d) {
+  const out = d.events.map((ev) => ({ id: ev.id, ts: ev.updatedAt, deleted: false, data: ev }));
+  Object.keys(d.tombstones || {}).forEach((id) => out.push({ id, ts: d.tombstones[id], deleted: true }));
+  return out;
+}
+
+function mergeRemote(local, remoteList) {
+  const best = new Map(); // id -> { ts, dead, ev }
+  local.events.forEach((ev) => best.set(ev.id, { ts: ev.updatedAt, dead: false, ev }));
+  Object.keys(local.tombstones || {}).forEach((id) => {
+    const ts = local.tombstones[id];
+    const cur = best.get(id);
+    if (!cur || ts > cur.ts) best.set(id, { ts, dead: true, ev: null });
+  });
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+  let changedEvents = false;
+  let changedTomb = false;
+  (Array.isArray(remoteList) ? remoteList : []).forEach((r) => {
+    if (!r || typeof r.id !== 'string' || !r.id || r.id.length > 64) return;
+    const ts = Number(r.ts);
+    if (!Number.isFinite(ts)) return;
+    const cur = best.get(r.id);
+    if (cur && cur.ts >= ts) return;
+    if (r.deleted) {
+      if (ts < cutoff) return;
+      if (cur && !cur.dead) changedEvents = true;
+      best.set(r.id, { ts, dead: true, ev: null });
+      changedTomb = true;
+    } else {
+      const res = sanitizeEvent({ ...(r.data && typeof r.data === 'object' ? r.data : {}), id: r.id, updatedAt: ts });
+      if (!res.event) return;
+      if (cur && cur.dead) changedTomb = true;
+      best.set(r.id, { ts, dead: false, ev: res.event });
+      changedEvents = true;
+    }
+  });
+  if (!changedEvents && !changedTomb) return { changed: false };
+  const events = [];
+  const tombstones = {};
+  best.forEach((v, id) => {
+    if (v.dead) { if (v.ts >= cutoff) tombstones[id] = v.ts; } else events.push(v.ev);
+  });
+  return { changed: true, events: changedEvents ? events : local.events, tombstones };
 }
 
 /* ---------- Mở rộng chuỗi sự kiện thành các buổi cụ thể ---------- */
@@ -798,7 +855,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, onSlotClick,
 /* ============================================================
    Component: EmailSyncPanel (nhắc qua email — Google Apps Script)
    ============================================================ */
-function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow, onForce }) {
+function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow, onCopyLink }) {
   const [url, setUrl] = useState(settings.syncUrl);
   const [token, setToken] = useState(settings.syncToken);
   const [showToken, setShowToken] = useState(false);
@@ -809,7 +866,7 @@ function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow,
 
   return (
     <div className="sync-panel">
-      <p className="hint">Khi tab đã đóng, email nhắc được gửi từ Google Apps Script của bạn. URL và token chỉ lưu trong trình duyệt này.</p>
+      <p className="hint">Các thiết bị dùng cùng URL và token sẽ chia sẻ một bộ lịch (tự đồng bộ khi mở app và mỗi 2 phút). Khi đóng tab, email nhắc được gửi từ Google Apps Script của bạn.</p>
       <label htmlFor={urlId}>URL Web App</label>
       <input id={urlId} type="url" autoComplete="off" spellCheck="false" placeholder="https://script.google.com/macros/s/.../exec"
         value={url} onChange={(e) => setUrl(e.target.value)} />
@@ -826,18 +883,16 @@ function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow,
       </div>
       <label className="switch-row">
         <input type="checkbox" role="switch" checked={settings.syncEnabled} onChange={(e) => onToggle(e.target.checked)} />
-        <span>Bật nhắc qua email</span>
+        <span>Bật đồng bộ và nhắc qua email</span>
       </label>
       <div className={`sync-status ${status.state}`} role="status">{status.message}</div>
       <div className="row">
         <button type="button" className="btn btn-sm" disabled={!ready} onClick={onTest}><Icon name="Send" size={15} /> Gửi thử email</button>
         <button type="button" className="btn btn-sm" disabled={!ready || !settings.syncEnabled} onClick={onSyncNow}><Icon name="RefreshCw" size={15} /> Đồng bộ ngay</button>
       </div>
-      {status.canForce && (
-        <button type="button" className="btn btn-danger btn-sm btn-block" style={{ marginTop: 8 }} onClick={onForce}>
-          Ghi đè bản trên máy chủ bằng bản của máy này
-        </button>
-      )}
+      <button type="button" className="btn btn-sm btn-block" style={{ marginTop: 8 }} disabled={!ready} onClick={onCopyLink}>
+        <Icon name="Link" size={15} /> Sao chép link cấu hình cho thiết bị khác
+      </button>
       {dirty && <p className="hint" style={{ marginTop: 6 }}>Hãy bấm "Lưu" trước khi gửi thử hoặc đồng bộ.</p>}
     </div>
   );
@@ -849,7 +904,7 @@ function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow,
 function Sidebar(props) {
   const {
     open, onClose, data, perm, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
-    onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onForceSync,
+    onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink,
   } = props;
   const { settings, events } = data;
   const [query, setQuery] = useState('');
@@ -936,9 +991,9 @@ function Sidebar(props) {
         </section>
 
         <details className="panel">
-          <summary>Nhắc qua email (khi đóng tab)</summary>
+          <summary>Đồng bộ thiết bị và nhắc email</summary>
           <EmailSyncPanel settings={settings} status={syncStatus} onSave={onSaveSync} onToggle={onToggleSync}
-            onTest={onTestEmail} onSyncNow={onSyncNow} onForce={onForceSync} />
+            onTest={onTestEmail} onSyncNow={onSyncNow} onCopyLink={onCopyLink} />
         </details>
       </div>
     </aside>
@@ -998,7 +1053,15 @@ function App() {
 
   /* ----- Cập nhật dữ liệu ----- */
   const mutateEvents = useCallback((fn) => {
-    setData((d) => ({ ...d, events: fn(d.events), updatedAt: Date.now() }));
+    setData((d) => {
+      const events = fn(d.events);
+      const keep = new Set(events.map((s) => s.id));
+      const now = Date.now();
+      const tombstones = { ...(d.tombstones || {}) };
+      d.events.forEach((s) => { if (!keep.has(s.id)) tombstones[s.id] = now; }); // đánh dấu đã xóa
+      keep.forEach((id) => { delete tombstones[id]; });
+      return { ...d, events, tombstones, updatedAt: now };
+    });
   }, []);
   const updateSettings = useCallback((patch) => {
     setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
@@ -1068,28 +1131,39 @@ function App() {
   /* ----- Đồng bộ nhắc qua email (Apps Script) ----- */
   const syncRef = useRef({ timer: null, busy: false, again: false });
 
-  const doSync = useCallback(async (force) => {
+  const doSync = useCallback(async () => {
     const d = dataRef.current;
     const s = d.settings;
     if (!(s.syncEnabled && s.syncUrl && s.syncToken)) return;
     if (!navigator.onLine) { setSyncStatus({ state: 'offline', message: 'Đang chờ có mạng để đồng bộ.' }); return; }
     if (syncRef.current.busy) { syncRef.current.again = true; return; }
     syncRef.current.busy = true;
-    setSyncStatus({ state: 'syncing', message: 'Đang đồng bộ…' });
+    setSyncStatus((p) => (p.state === 'ok' ? p : { state: 'syncing', message: 'Đang đồng bộ…' }));
     try {
+      // Đẩy lịch của máy này lên và nhận về bản đã gộp từ máy chủ (hai chiều)
       const res = await postToScript(s.syncUrl, {
-        action: 'sync', token: s.syncToken, updatedAt: d.updatedAt, force: !!force,
-        events: buildReminderPayload(d.events),
+        action: 'sync2', token: s.syncToken,
+        series: toRemoteSeries(d), reminders: buildReminderPayload(d.events),
       });
       if (res.ok) {
+        const merged = mergeRemote(dataRef.current, res.series);
+        if (merged.changed) {
+          setData((cur) => {
+            const m = mergeRemote(cur, res.series);
+            return m.changed ? { ...cur, events: m.events, tombstones: m.tombstones } : cur;
+          });
+          pushToast({ kind: 'info', title: 'Đã cập nhật lịch từ thiết bị khác' });
+        }
         if (dataRef.current.updatedAt === d.updatedAt) { try { localStorage.removeItem(DIRTY_KEY); } catch (e) { /* bỏ qua */ } }
         const at = Date.now();
         updateSettings({ lastSync: at });
-        setSyncStatus({ state: 'ok', message: `Đã đồng bộ lúc ${fmtClock(at)} (${res.count != null ? res.count : 0} lượt nhắc)` });
-      } else if (res.error === 'stale') {
-        setSyncStatus({ state: 'error', canForce: true, message: 'Máy chủ đang có bản mới hơn bản trên máy này. Bấm nút bên dưới nếu muốn ghi đè.' });
+        setSyncStatus({ state: 'ok', message: `Đã đồng bộ lúc ${fmtClock(at)} · ${res.count != null ? res.count : 0} sự kiện trên máy chủ` });
       } else if (res.error === 'forbidden') {
         setSyncStatus({ state: 'error', message: 'Token không đúng. Kiểm tra lại token trong Script Properties.' });
+      } else if (res.error === 'bad_action') {
+        setSyncStatus({ state: 'error', message: 'Script chưa phải bản mới. Dán Code.gs mới rồi triển khai "Phiên bản mới".' });
+      } else if (res.error === 'busy') {
+        setSyncStatus({ state: 'error', message: 'Máy chủ đang bận, sẽ thử lại ở lần đồng bộ sau.' });
       } else {
         setSyncStatus({ state: 'error', message: `Máy chủ báo lỗi: ${res.error || 'không rõ'}` });
       }
@@ -1097,9 +1171,9 @@ function App() {
       setSyncStatus({ state: 'error', message: e.message });
     } finally {
       syncRef.current.busy = false;
-      if (syncRef.current.again) { syncRef.current.again = false; syncRef.current.timer = setTimeout(() => doSync(false), 1500); }
+      if (syncRef.current.again) { syncRef.current.again = false; syncRef.current.timer = setTimeout(() => doSync(), 1500); }
     }
-  }, [updateSettings]);
+  }, [updateSettings, pushToast]);
 
   const scheduleSync = useCallback((delay = 3000) => {
     const s = dataRef.current.settings;
@@ -1137,6 +1211,64 @@ function App() {
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
   }, [scheduleSync]);
+
+  // Tự đồng bộ khi mở app, khi quay lại tab, khi có mạng và mỗi 2 phút
+  useEffect(() => {
+    if (!(settings.syncEnabled && settings.syncUrl && settings.syncToken)) return undefined;
+    const tick = () => { if (document.visibilityState === 'visible') doSync(); };
+    const first = setTimeout(tick, 800);
+    const timer = setInterval(tick, POLL_MS);
+    document.addEventListener('visibilitychange', tick);
+    window.addEventListener('online', tick);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+      window.removeEventListener('online', tick);
+    };
+  }, [settings.syncEnabled, settings.syncUrl, settings.syncToken, doSync]);
+
+  // Link cấu hình: mở trên thiết bị khác để tự điền URL + token (nằm sau dấu #, không gửi lên máy chủ web)
+  const copyConfigLink = async () => {
+    const st = dataRef.current.settings;
+    if (!(st.syncUrl && st.syncToken)) {
+      pushToast({ kind: 'error', title: 'Chưa có cấu hình', message: 'Hãy nhập URL, token và bấm "Lưu" trước.' });
+      return;
+    }
+    const payload = encodeURIComponent(btoa(JSON.stringify({ u: st.syncUrl, t: st.syncToken })));
+    const link = `${location.origin}${location.pathname}#cfg=${payload}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      pushToast({ kind: 'success', title: 'Đã sao chép link cấu hình', ttl: 9000,
+        message: 'Mở link này trên thiết bị khác. Link chứa token, đừng gửi cho người lạ.' });
+    } catch (e) {
+      window.prompt('Sao chép link cấu hình (chứa token, đừng chia sẻ):', link);
+    }
+  };
+
+  // Nhận link cấu hình khi mở trang (hỏi xác nhận trước khi áp dụng)
+  useEffect(() => {
+    const m = /[#&]cfg=([^&]+)/.exec(location.hash || '');
+    if (!m) return;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* bỏ qua */ }
+    try {
+      const cfg = JSON.parse(atob(decodeURIComponent(m[1])));
+      const okUrl = typeof cfg.u === 'string' && /^https:\/\/script\.google\.com\/macros\//.test(cfg.u);
+      if (!okUrl || typeof cfg.t !== 'string' || !cfg.t) throw new Error('bad');
+      setConfirm({
+        title: 'Áp dụng cấu hình đồng bộ?',
+        message: `Thiết bị này sẽ đồng bộ lịch với Google Apps Script: ...${cfg.u.slice(-24)}. Chỉ đồng ý nếu link do chính bạn tạo.`,
+        confirmLabel: 'Áp dụng',
+        onConfirm: () => {
+          updateSettings({ syncUrl: cfg.u, syncToken: cfg.t, syncEnabled: true });
+          pushToast({ kind: 'success', title: 'Đã áp dụng cấu hình', message: 'Đang tải lịch từ máy chủ…' });
+        },
+      });
+    } catch (e) {
+      pushToast({ kind: 'error', title: 'Link cấu hình không hợp lệ' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveSyncSettings = (url, token) => {
     updateSettings({ syncUrl: url, syncToken: token });
@@ -1354,11 +1486,12 @@ function App() {
     const imp = importAsk;
     if (!imp) return;
     mutateEvents((list) => {
-      if (how === 'replace') return imp.events;
+      const stamp = Date.now();
+      if (how === 'replace') return imp.events.map((s) => ({ ...s, updatedAt: stamp }));
       const map = new Map(list.map((s) => [s.id, s]));
       imp.events.forEach((s) => {
         const cur = map.get(s.id);
-        if (!cur || s.updatedAt >= cur.updatedAt) map.set(s.id, s);
+        if (!cur || s.updatedAt >= cur.updatedAt) map.set(s.id, { ...s, updatedAt: stamp });
       });
       return [...map.values()];
     });
@@ -1417,7 +1550,7 @@ function App() {
         onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
         onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries}
         syncStatus={syncStatus} onSaveSync={saveSyncSettings} onToggleSync={toggleSync}
-        onTestEmail={testEmail} onSyncNow={() => doSync(false)} onForceSync={() => doSync(true)} />
+        onTestEmail={testEmail} onSyncNow={() => doSync()} onCopyLink={copyConfigLink} />
 
       {modal && (modal.mode.type === 'new' || modalSeries) && (
         <EventModal mode={modal.mode} series={modalSeries} onSave={saveForm}
