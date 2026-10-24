@@ -502,3 +502,37 @@ details.panel[open] > summary { margin-bottom: 10px; }
 .week-summary svg { vertical-align: -2px; color: var(--success); }
 .week-summary .bar { flex: 1; min-width: 80px; max-width: 220px; height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .week-summary .bar i { display: block; height: 100%; border-radius: 999px; background: var(--success); transition: width .5s cubic-bezier(.2, .8, .2, 1); }
+
+/* ============================================================
+   Kéo thả thẻ, ghi chú, phím tắt
+   ============================================================ */
+.event { user-select: none; }
+.event.dragging { opacity: .35; }
+.event-ghost {
+  position: absolute; left: 2px; right: 2px; z-index: 5; pointer-events: none;
+  padding: 4px 8px; border: 2px dashed var(--primary); border-radius: 6px;
+  background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; opacity: .94;
+}
+.ev-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; cursor: ns-resize; z-index: 2; }
+.ev-resize::after {
+  content: ''; position: absolute; left: 50%; bottom: 2px; width: 24px; height: 3px; margin-left: -12px;
+  border-radius: 2px; background: var(--ev-color); opacity: 0; transition: opacity .15s;
+}
+.event:hover .ev-resize::after { opacity: .6; }
+body.dragging-card, body.dragging-card * { cursor: grabbing !important; user-select: none !important; }
+.ev-note {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 11.5px; color: var(--muted); font-style: italic; margin-top: 2px;
+}
+textarea {
+  width: 100%; min-height: 72px; padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--surface); resize: vertical; line-height: 1.45;
+}
+.kbd-table { width: 100%; border-collapse: collapse; }
+.kbd-table td { padding: 7px 4px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.kbd-table td:first-child { width: 110px; white-space: nowrap; }
+kbd {
+  display: inline-block; min-width: 26px; padding: 2px 8px; margin-right: 4px; text-align: center;
+  font: inherit; font-size: 12.5px; font-weight: 700; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 6px;
+}
