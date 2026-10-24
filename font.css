@@ -395,6 +395,10 @@ details.panel[open] > summary { margin-bottom: 10px; }
 /* ============================================================
    Responsive
    ============================================================ */
+@media (min-width: 961px) {
+  .app.side-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app.side-collapsed .sidebar { display: none; }
+}
 @media (max-width: 960px) {
   .app { grid-template-columns: minmax(0, 1fr); }
   .only-mobile { display: inline-flex; }
