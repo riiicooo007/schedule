@@ -79,6 +79,17 @@ const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const validDateStr = (s) => typeof s === 'string' && RE_DATE.test(s) && toISODate(parseISODate(s)) === s;
 
+// Dấu "đã làm" theo từng ngày: { 'YYYY-MM-DD': { v: true/false, t: thời điểm bấm } }
+function sanitizeDone(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  Object.keys(raw).forEach((k) => {
+    const x = raw[k];
+    if (validDateStr(k) && x && typeof x.v === 'boolean' && Number.isFinite(x.t)) out[k] = { v: x.v, t: x.t };
+  });
+  return out;
+}
+
 function sanitizeOverride(o) {
   if (!o || typeof o !== 'object') return null;
   const title = typeof o.title === 'string' ? o.title.trim().slice(0, 120) : '';
@@ -109,6 +120,7 @@ function sanitizeEvent(raw) {
     remindMin: Number.isFinite(raw.remindMin) && raw.remindMin >= 0 && raw.remindMin <= 10080 ? Math.round(raw.remindMin) : 0,
     kind: raw.kind,
     exceptions: {},
+    done: sanitizeDone(raw.done),
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
   if (raw.kind === 'once') {
@@ -185,6 +197,17 @@ function toRemoteSeries(d) {
   return out;
 }
 
+function mergeDone(a, b) {
+  const out = { ...(a || {}) };
+  Object.keys(b || {}).forEach((k) => { if (!out[k] || b[k].t > out[k].t) out[k] = b[k]; });
+  return out;
+}
+function sameDone(a, b) {
+  const ka = Object.keys(a || {});
+  const kb = Object.keys(b || {});
+  return ka.length === kb.length && ka.every((k) => b[k] && b[k].v === a[k].v && b[k].t === a[k].t);
+}
+
 function mergeRemote(local, remoteList) {
   const best = new Map(); // id -> { ts, dead, ev }
   local.events.forEach((ev) => best.set(ev.id, { ts: ev.updatedAt, dead: false, ev }));
@@ -201,6 +224,21 @@ function mergeRemote(local, remoteList) {
     const ts = Number(r.ts);
     if (!Number.isFinite(ts)) return;
     const cur = best.get(r.id);
+    if (cur && !cur.dead && !r.deleted) {
+      // Cùng một sự kiện ở cả hai nơi: nội dung theo bản mới hơn, dấu "đã làm" gộp theo từng ngày
+      const r0 = sanitizeEvent({ ...(r.data && typeof r.data === 'object' ? r.data : {}), id: r.id, updatedAt: ts });
+      if (!r0.event) return;
+      const remoteWins = ts > cur.ts;
+      const doneM = mergeDone(cur.ev.done, r0.event.done);
+      const diffRemote = !sameDone(doneM, r0.event.done);
+      const diffLocal = !sameDone(doneM, cur.ev.done);
+      if (!remoteWins && !diffLocal) return;
+      const out = { ...(remoteWins ? r0.event : cur.ev), done: doneM };
+      if (diffRemote) out.updatedAt = Date.now(); // máy chủ thiếu vài dấu tích: đẩy bản đầy đủ lên
+      best.set(r.id, { ts: out.updatedAt, dead: false, ev: out });
+      changedEvents = true;
+      return;
+    }
     if (cur && cur.ts >= ts) return;
     if (r.deleted) {
       if (ts < cutoff) return;
@@ -239,6 +277,7 @@ function occurrencesInRange(s, fromD, toD) {
       title: o ? o.title : s.title, category: o ? o.category : s.category,
       startTime: o ? o.startTime : s.startTime, endTime: o ? o.endTime : s.endTime,
       remindMin: o ? o.remindMin : s.remindMin, overridden: !!o,
+      done: !!(s.done && s.done[iso] && s.done[iso].v),
     });
   };
   if (s.kind === 'once') {
@@ -295,7 +334,7 @@ function buildReminderPayload(events) {
   const out = [];
   events.forEach((s) => {
     occurrencesInRange(s, from, to).forEach((o) => {
-      if (o.remindMin > 0) {
+      if (o.remindMin > 0 && !o.done) {
         out.push({ id: s.id, title: o.title, startISO: `${o.date}T${o.startTime}:00${tz}`, remindMin: o.remindMin });
       }
     });
@@ -526,7 +565,7 @@ function formToSeries(f, base) {
   const s = {
     id: base ? base.id : uid(), title: f.title.trim(), category: f.category,
     startTime: f.startTime, endTime: f.endTime, remindMin: Number(f.remindMin),
-    kind: f.kind, exceptions: {}, updatedAt: Date.now(),
+    kind: f.kind, exceptions: {}, done: base && base.done ? { ...base.done } : {}, updatedAt: Date.now(),
   };
   if (f.kind === 'once') {
     s.date = f.date;
@@ -723,7 +762,7 @@ function ToastHost({ toasts, onDismiss }) {
 /* ============================================================
    Component: WeekGrid (lưới thời gian biểu theo tuần)
    ============================================================ */
-function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onShow24h }) {
+function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onToggleDone, onShow24h }) {
   const cfg = HOUR_OPTIONS[hoursKey] || HOUR_OPTIONS['6-23'];
   const gridStart = cfg.start * 60;
   const gridEnd = cfg.end * 60;
@@ -752,6 +791,16 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const nowVisible = nowMin >= gridStart && nowMin <= gridEnd;
   const weekHasToday = days.some((d) => toISODate(d) === todayISO);
+  // Tổng kết tuần: số buổi đã làm / số buổi đã bắt đầu
+  const summary = useMemo(() => {
+    const nowMs = now.getTime();
+    let started = 0;
+    let done = 0;
+    events.forEach((s) => occurrencesInRange(s, days[0], days[6]).forEach((o) => {
+      if (dateTimeMs(o.date, o.startTime) <= nowMs) { started += 1; if (o.done) done += 1; }
+    }));
+    return { started, done };
+  }, [events, days, now]);
 
   // Cuộn tới vị trí giờ hiện tại khi mở app, bấm "Hôm nay" hoặc đổi khung giờ
   useEffect(() => {
@@ -774,6 +823,12 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
 
   return (
     <div className="grid-card">
+      {summary.started > 0 && (
+        <div className="week-summary" aria-live="polite">
+          <span><Icon name="Check" size={14} /> {weekHasToday ? 'Tuần này' : 'Tuần đang xem'}: <strong>{summary.done}/{summary.started}</strong> buổi đã làm</span>
+          <span className="bar" aria-hidden="true"><i style={{ width: `${Math.round((summary.done / summary.started) * 100)}%` }} /></span>
+        </div>
+      )}
       {(model.hidden > 0 || model.conflicts > 0) && (
         <div className="grid-notes">
           {model.conflicts > 0 && (
@@ -817,26 +872,37 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
                     const h = Math.max(((it.e - it.s) / 60) * HOUR_H - 2, 20);
                     const w = 100 / it.cols;
                     const compact = h < 38;
+                    const started = dateTimeMs(it.date, it.startTime) <= now.getTime();
                     return (
-                      <button key={it.key} type="button" className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}`}
+                      <div key={it.key} className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}`}
                         style={{
                           animationDelay: `${ci * 0.05}s`, top, height: h, left: `calc(${it.col * w}% + 2px)`, width: `calc(${w}% - 4px)`,
                           '--ev-color': `var(--cat-${it.category})`, '--ev-bg': `var(--cat-${it.category}-bg)`,
-                        }}
-                        title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}`}
-                        aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${it.conflict ? ', trùng giờ' : ''}`}
-                        onClick={(e) => { e.stopPropagation(); onCardClick(it.seriesId, it.date); }}>
-                        <span className="ev-title">{it.title}</span>
-                        <span className="ev-time">{it.startTime} – {it.endTime}</span>
-                        {h >= 64 && (
-                          <span className="ev-meta">
-                            {it.kind === 'weekly' && <Icon name="Repeat" size={12} />}
-                            {it.remindMin > 0 && <Icon name="Bell" size={12} />}
-                            {it.conflict && <Icon name="TriangleAlert" size={12} />}
-                            {catLabel(it.category)}
-                          </span>
+                        }}>
+                        <button type="button" className="ev-open"
+                          title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}${it.done ? '\n✓ Đã làm' : ''}`}
+                          aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${it.conflict ? ', trùng giờ' : ''}${it.done ? ', đã làm' : ''}`}
+                          onClick={(e) => { e.stopPropagation(); onCardClick(it.seriesId, it.date); }}>
+                          <span className="ev-title">{it.title}</span>
+                          <span className="ev-time">{it.startTime} – {it.endTime}</span>
+                          {h >= 64 && (
+                            <span className="ev-meta">
+                              {it.kind === 'weekly' && <Icon name="Repeat" size={12} />}
+                              {it.remindMin > 0 && !it.done && <Icon name="Bell" size={12} />}
+                              {it.conflict && <Icon name="TriangleAlert" size={12} />}
+                              {catLabel(it.category)}
+                            </span>
+                          )}
+                        </button>
+                        {(started || it.done) && (
+                        <button type="button" role="checkbox" aria-checked={it.done} className={`ev-check${it.done ? ' on' : ''}`}
+                          title={it.done ? 'Đã làm (bấm để bỏ)' : 'Đánh dấu đã làm'}
+                          aria-label={`${it.done ? 'Bỏ đánh dấu đã làm' : 'Đánh dấu đã làm'}: ${it.title}, ${fmtDMY(it.date)}`}
+                          onClick={(e) => { e.stopPropagation(); onToggleDone(it.seriesId, it.date); }}>
+                          {it.done && <Icon name="Check" size={12} />}
+                        </button>
                         )}
-                      </button>
+                      </div>
                     );
                   })}
                   {isToday && nowVisible && (
@@ -1175,7 +1241,7 @@ function App() {
       let changed = false;
       dataRef.current.events.forEach((s) => {
         occurrencesInRange(s, from, to).forEach((o) => {
-          if (o.remindMin <= 0) return;
+          if (o.remindMin <= 0 || o.done) return;
           const startMs = dateTimeMs(o.date, o.startTime);
           const key = `${o.seriesId}|${o.date}|${o.startTime}`;
           // Báo bù nếu lỡ mốc nhưng sự kiện chưa bắt đầu
@@ -1460,9 +1526,11 @@ function App() {
           else if (s.exceptions[k] === 'deleted') moved[k] = 'deleted';
         });
         const tail = formToSeries(form, null);
+        const keptDone = {};
+        Object.keys(s.done || {}).forEach((k) => { if (k < mode.occDate) keptDone[k] = s.done[k]; else tail.done[k] = s.done[k]; });
         Object.keys(moved).forEach((k) => { if (k >= tail.rangeStart && k <= tail.rangeEnd) tail.exceptions[k] = 'deleted'; });
         if (prevEnd < s.rangeStart) next.splice(idx, 1, tail);
-        else next.splice(idx, 1, { ...s, rangeEnd: prevEnd, exceptions: kept, updatedAt: nowTs }, tail);
+        else next.splice(idx, 1, { ...s, rangeEnd: prevEnd, exceptions: kept, done: keptDone, updatedAt: nowTs }, tail);
       }
       return next;
     });
@@ -1573,6 +1641,23 @@ function App() {
   };
 
   /* ----- Điều hướng tuần ----- */
+  // Đánh dấu "đã làm" cho một buổi (bấm lần nữa để bỏ)
+  const toggleDone = (seriesId, date) => {
+    const s0 = dataRef.current.events.find((x) => x.id === seriesId);
+    if (!s0) return;
+    const occ = occurrencesInRange(s0, parseISODate(date), parseISODate(date))[0];
+    const wasDone = !!(s0.done && s0.done[date] && s0.done[date].v);
+    if (occ && !wasDone && dateTimeMs(date, occ.startTime) > Date.now()) {
+      pushToast({ kind: 'info', title: 'Buổi này chưa bắt đầu', message: 'Chỉ tích "đã làm" được từ khi buổi bắt đầu.' });
+      return;
+    }
+    mutateEvents((list) => list.map((s) => {
+      if (s.id !== seriesId) return s;
+      const cur = !!(s.done && s.done[date] && s.done[date].v);
+      const t = Date.now();
+      return { ...s, done: { ...(s.done || {}), [date]: { v: !cur, t } }, updatedAt: t };
+    }));
+  };
   // Đổi tuần kèm hướng trượt: tuần sau trượt từ phải, tuần trước trượt từ trái
   const goWeek = (next) => { setSlideDir(next.getTime() >= weekStart.getTime() ? 'next' : 'prev'); setWeekStart(next); };
   const shiftWeek = (n) => goWeek(addDays(weekStart, n * 7));
@@ -1613,7 +1698,7 @@ function App() {
         <div className="grid-wrap">
           <WeekGrid weekStart={weekStart} events={data.events} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
             onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
-            onCardClick={openOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
+            onCardClick={openOccurrence} onToggleDone={toggleDone} onShow24h={() => updateSettings({ hours: '0-23' })} />
         </div>
       </div>
 
