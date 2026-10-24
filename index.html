@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thời gian biểu cá nhân</title>
+  <meta name="description" content="Quản lý và lập thời gian biểu cá nhân, lưu cục bộ, có nhắc lịch bằng thông báo, chuông và email.">
+
+  <!-- Áp dụng giao diện Sáng/Tối ngay từ đầu để tránh nháy màu -->
+  <script>
+    (function () {
+      try {
+        var d = JSON.parse(localStorage.getItem('tp_data_v1') || 'null');
+        var t = d && d.settings && d.settings.theme;
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { /* bỏ qua */ }
+    })();
+  </script>
+
+  <link rel="stylesheet" href="font.css">
+</head>
+<body>
+  <div id="root"></div>
+  <noscript>Ứng dụng cần bật JavaScript để hoạt động. Vui lòng bật JavaScript trong trình duyệt.</noscript>
+
+  <!-- Thư viện qua CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+  <!-- Toàn bộ logic ứng dụng (JSX được Babel biên dịch trực tiếp trên trình duyệt) -->
+  <script type="text/babel" src="react.js"></script>
+</body>
+</html>
