@@ -899,11 +899,63 @@ function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow,
 }
 
 /* ============================================================
+   Component: MiniCalendar (lịch tháng nhỏ để nhảy tuần)
+   ============================================================ */
+function MiniCalendar({ weekStart, events, onPick }) {
+  const [month, setMonth] = useState(() => new Date(weekStart.getFullYear(), weekStart.getMonth(), 1));
+  const wsKey = toISODate(weekStart);
+  // Khi đổi tuần ở nơi khác (nút Tuần trước/sau, Hôm nay) thì lịch tháng đi theo
+  useEffect(() => { setMonth(new Date(weekStart.getFullYear(), weekStart.getMonth(), 1)); }, [wsKey]);
+  const todayISO = toISODate(new Date());
+  const weekEndISO = toISODate(addDays(weekStart, 6));
+  const cells = useMemo(() => {
+    const first = startOfWeek(month);
+    return Array.from({ length: 42 }, (_, i) => addDays(first, i));
+  }, [month]);
+  // Các ngày có sự kiện (hiện chấm nhỏ)
+  const busy = useMemo(() => {
+    const set = new Set();
+    events.forEach((s) => occurrencesInRange(s, cells[0], cells[41]).forEach((o) => set.add(o.date)));
+    return set;
+  }, [events, cells]);
+  const shift = (n) => setMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
+
+  return (
+    <div className="mini-cal">
+      <div className="mini-head">
+        <button type="button" className="icon-btn" aria-label="Tháng trước" onClick={() => shift(-1)}><Icon name="ChevronLeft" size={16} /></button>
+        <strong aria-live="polite">Tháng {month.getMonth() + 1}/{month.getFullYear()}</strong>
+        <button type="button" className="icon-btn" aria-label="Tháng sau" onClick={() => shift(1)}><Icon name="ChevronRight" size={16} /></button>
+      </div>
+      <div className="mini-grid">
+        {WEEKDAYS.map((w) => <span key={w} className="mini-dow">{w}</span>)}
+        {cells.map((d) => {
+          const iso = toISODate(d);
+          const cls = ['mini-day'];
+          if (d.getMonth() !== month.getMonth()) cls.push('outside');
+          if (iso === todayISO) cls.push('today');
+          if (iso >= wsKey && iso <= weekEndISO) cls.push('in-week');
+          const has = busy.has(iso);
+          return (
+            <button key={iso} type="button" className={cls.join(' ')} onClick={() => onPick(d)}
+              aria-current={iso === todayISO ? 'date' : undefined}
+              aria-label={`${fmtDMY(iso)}${has ? ', có lịch' : ''}`}>
+              {d.getDate()}
+              {has && <span className="mini-dot" aria-hidden="true" />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    Component: Sidebar
    ============================================================ */
 function Sidebar(props) {
   const {
-    open, onClose, data, perm, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
+    open, onClose, data, perm, weekStart, onPickDate, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
     onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink,
   } = props;
   const { settings, events } = data;
@@ -931,6 +983,11 @@ function Sidebar(props) {
         <button type="button" className="icon-btn" aria-label="Đóng bảng điều khiển" onClick={onClose}><Icon name="X" /></button>
       </div>
       <div className="sidebar-scroll">
+        <section className="panel">
+          <h3>Lịch tháng</h3>
+          <MiniCalendar weekStart={weekStart} events={events} onPick={onPickDate} />
+        </section>
+
         <section className="panel">
           <h3>Thông báo và âm thanh</h3>
           <div className="stack">
@@ -1517,6 +1574,8 @@ function App() {
   /* ----- Điều hướng tuần ----- */
   const shiftWeek = (n) => setWeekStart((w) => addDays(w, n * 7));
   const goToday = () => { setWeekStart(startOfWeek(new Date())); setScrollSignal((n) => n + 1); };
+  // Bấm một ngày trong lịch tháng: nhảy tới tuần chứa ngày đó (điện thoại thì đóng ngăn kéo)
+  const pickDate = (d) => { setWeekStart(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
   const weekLabel = `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
 
   const modalSeries = modal && modal.mode.type === 'edit' ? data.events.find((s) => s.id === modal.mode.seriesId) : null;
@@ -1556,7 +1615,7 @@ function App() {
       </div>
 
       <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={data} perm={perm}
+      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={data} perm={perm} weekStart={weekStart} onPickDate={pickDate}
         onToggleNotify={toggleNotify} onTestChime={() => AudioEngine.chime(settings.volume)}
         onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
         onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries}
