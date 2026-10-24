@@ -723,7 +723,7 @@ function ToastHost({ toasts, onDismiss }) {
 /* ============================================================
    Component: WeekGrid (lưới thời gian biểu theo tuần)
    ============================================================ */
-function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, onSlotClick, onCardClick, onShow24h }) {
+function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onShow24h }) {
   const cfg = HOUR_OPTIONS[hoursKey] || HOUR_OPTIONS['6-23'];
   const gridStart = cfg.start * 60;
   const gridEnd = cfg.end * 60;
@@ -788,7 +788,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, onSlotClick,
         </div>
       )}
       <div className="grid-scroll" ref={scrollRef}>
-        <div className="grid-inner" style={{ '--hour-h': `${HOUR_H}px` }}>
+        <div key={toISODate(weekStart)} className={`grid-inner slide-${slideDir}`} style={{ '--hour-h': `${HOUR_H}px` }}>
           <div className="grid-head">
             <div className="head-corner" />
             {days.map((d, i) => {
@@ -808,7 +808,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, onSlotClick,
                 <div className="now-tag" style={{ top: ((nowMin - gridStart) / 60) * HOUR_H }}>{minToTime(nowMin)}</div>
               )}
             </div>
-            {model.cols.map((col) => {
+            {model.cols.map((col, ci) => {
               const isToday = col.iso === todayISO;
               return (
                 <div key={col.iso} className={`day-col${isToday ? ' today' : ''}`} onClick={(e) => handleColClick(e, col.iso)}>
@@ -820,7 +820,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, onSlotClick,
                     return (
                       <button key={it.key} type="button" className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}`}
                         style={{
-                          top, height: h, left: `calc(${it.col * w}% + 2px)`, width: `calc(${w}% - 4px)`,
+                          animationDelay: `${ci * 0.05}s`, top, height: h, left: `calc(${it.col * w}% + 2px)`, width: `calc(${w}% - 4px)`,
                           '--ev-color': `var(--cat-${it.category})`, '--ev-bg': `var(--cat-${it.category}-bg)`,
                         }}
                         title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}`}
@@ -1080,6 +1080,7 @@ function App() {
   const dataRef = useRef(data);
   dataRef.current = data;
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [slideDir, setSlideDir] = useState('next'); // hướng trượt khi đổi tuần
   const [now, setNow] = useState(() => new Date());
   const [scrollSignal, setScrollSignal] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -1572,10 +1573,12 @@ function App() {
   };
 
   /* ----- Điều hướng tuần ----- */
-  const shiftWeek = (n) => setWeekStart((w) => addDays(w, n * 7));
-  const goToday = () => { setWeekStart(startOfWeek(new Date())); setScrollSignal((n) => n + 1); };
+  // Đổi tuần kèm hướng trượt: tuần sau trượt từ phải, tuần trước trượt từ trái
+  const goWeek = (next) => { setSlideDir(next.getTime() >= weekStart.getTime() ? 'next' : 'prev'); setWeekStart(next); };
+  const shiftWeek = (n) => goWeek(addDays(weekStart, n * 7));
+  const goToday = () => { goWeek(startOfWeek(new Date())); setScrollSignal((n) => n + 1); };
   // Bấm một ngày trong lịch tháng: nhảy tới tuần chứa ngày đó (điện thoại thì đóng ngăn kéo)
-  const pickDate = (d) => { setWeekStart(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
+  const pickDate = (d) => { goWeek(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
   const weekLabel = `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
 
   const modalSeries = modal && modal.mode.type === 'edit' ? data.events.find((s) => s.id === modal.mode.seriesId) : null;
@@ -1608,7 +1611,7 @@ function App() {
           </div>
         </header>
         <div className="grid-wrap">
-          <WeekGrid weekStart={weekStart} events={data.events} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal}
+          <WeekGrid weekStart={weekStart} events={data.events} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
             onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
             onCardClick={openOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
         </div>
