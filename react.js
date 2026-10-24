@@ -928,7 +928,7 @@ function Sidebar(props) {
     <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Bảng điều khiển">
       <div className="sidebar-head">
         <div className="brand"><Icon name="CalendarDays" size={20} /> <span>Thời gian biểu</span></div>
-        <button type="button" className="icon-btn only-mobile" aria-label="Đóng bảng điều khiển" onClick={onClose}><Icon name="X" /></button>
+        <button type="button" className="icon-btn" aria-label="Đóng bảng điều khiển" onClick={onClose}><Icon name="X" /></button>
       </div>
       <div className="sidebar-scroll">
         <section className="panel">
@@ -1026,6 +1026,17 @@ function App() {
   const [now, setNow] = useState(() => new Date());
   const [scrollSignal, setScrollSignal] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // PC: thanh bên có thể ẩn/hiện (nhớ lại lựa chọn). Điện thoại: thanh bên là ngăn kéo.
+  const [sideCollapsed, setSideCollapsed] = useState(() => {
+    try { return localStorage.getItem('tp_side_collapsed') === '1'; } catch (e) { return false; }
+  });
+  const isMobileView = () => window.matchMedia('(max-width: 960px)').matches;
+  const setPanel = (show) => {
+    if (isMobileView()) { setSidebarOpen(show); return; }
+    setSideCollapsed(!show);
+    try { localStorage.setItem('tp_side_collapsed', show ? '0' : '1'); } catch (e) { /* bỏ qua */ }
+  };
+  const togglePanel = () => setPanel(isMobileView() ? !sidebarOpen : sideCollapsed);
   const [modal, setModal] = useState(null);       // { mode }
   const [scopeAsk, setScopeAsk] = useState(null); // { seriesId, date }
   const [confirm, setConfirm] = useState(null);
@@ -1511,11 +1522,11 @@ function App() {
   const modalSeries = modal && modal.mode.type === 'edit' ? data.events.find((s) => s.id === modal.mode.seriesId) : null;
 
   return (
-    <div className="app">
+    <div className={`app${sideCollapsed ? ' side-collapsed' : ''}`}>
       <div className="main">
         <header className="toolbar">
           <div className="toolbar-left">
-            <button type="button" className="icon-btn only-mobile bordered" aria-label="Mở bảng điều khiển" onClick={() => setSidebarOpen(true)}><Icon name="Menu" /></button>
+            <button type="button" className="icon-btn bordered" aria-label="Mở hoặc ẩn bảng điều khiển" onClick={togglePanel}><Icon name="Menu" /></button>
             <h1 className="app-title">Thời gian biểu</h1>
           </div>
           <div className="toolbar-nav">
@@ -1545,7 +1556,7 @@ function App() {
       </div>
 
       <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} data={data} perm={perm}
+      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={data} perm={perm}
         onToggleNotify={toggleNotify} onTestChime={() => AudioEngine.chime(settings.volume)}
         onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
         onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries}
