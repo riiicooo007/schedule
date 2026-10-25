@@ -384,13 +384,23 @@ function fillPhrase(tpl, s) {
   return t.replace(/\{\s*ghi\s*ch[úu]\s*\}/gi, () => taskNote(s) || s.title)
     .replace(/\{\s*t[êe]n\s*\}/gi, () => s.title);
 }
+// Chọn giọng tiếng Việt nữ: trình duyệt không cho biết giới tính nên đoán theo tên giọng
+// (Microsoft HoaiMy, Apple Linh, Google tiếng Việt đều là giọng nữ; NamMinh là giọng nam)
+function pickFemaleVoice() {
+  const vi = window.speechSynthesis.getVoices().filter((x) => /^vi/i.test(x.lang));
+  const female = /hoaimy|hoai my|linh|google|female|nữ|nu\b/i;
+  const male = /namminh|nam minh|\bmale\b|nam\b/i;
+  return vi.find((x) => female.test(x.name) && !male.test(x.name)) || vi.find((x) => !male.test(x.name)) || vi[0] || null;
+}
+if ('speechSynthesis' in window) { try { window.speechSynthesis.getVoices(); } catch (e) { /* bỏ qua */ } }
 function speakText(text, volume) {
   try {
     if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'vi-VN';
     u.volume = Math.min(1, Math.max(0, volume));
-    const v = window.speechSynthesis.getVoices().find((x) => /^vi/i.test(x.lang));
+    u.pitch = 1.15; // cao hơn một chút cho giọng nữ rõ hơn
+    const v = pickFemaleVoice();
     if (v) u.voice = v;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
