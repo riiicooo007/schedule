@@ -1029,7 +1029,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
                               {it.remindMin > 0 && !it.done && <Icon name="Bell" size={12} />}
                               {it.conflict && <Icon name="TriangleAlert" size={12} />}
                               {it.note && <Icon name="FileText" size={12} />}
-                              {catLabel(it.category)}
+                              <span className="ev-cat">{catLabel(it.category)}</span>
                             </span>
                           )}
                           {h >= 96 && it.note && <span className="ev-note">{it.note}</span>}
@@ -1193,7 +1193,7 @@ function Sidebar(props) {
   return (
     <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Bảng điều khiển">
       <div className="sidebar-head">
-        <div className="brand"><Icon name="CalendarDays" size={20} /> <span>Thời gian biểu</span></div>
+        <div className="brand"><span className="logo sm" aria-hidden="true"><Icon name="Clock" size={16} /></span> <span>Thời gian biểu</span></div>
         <button type="button" className="icon-btn" aria-label="Đóng bảng điều khiển" onClick={onClose}><Icon name="X" /></button>
       </div>
       <div className="sidebar-scroll">
@@ -1884,6 +1884,7 @@ function App() {
         <header className="toolbar">
           <div className="toolbar-left">
             <button type="button" className="icon-btn bordered" aria-label="Mở hoặc ẩn bảng điều khiển" onClick={togglePanel}><Icon name="Menu" /></button>
+            <span className="logo" aria-hidden="true"><Icon name="Clock" size={20} /></span>
             <h1 className="app-title">Thời gian biểu</h1>
           </div>
           <div className="toolbar-nav">
