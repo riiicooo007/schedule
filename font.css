@@ -536,3 +536,56 @@ kbd {
   font: inherit; font-size: 12.5px; font-weight: 700; color: var(--text);
   background: var(--surface-2); border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 6px;
 }
+
+/* ============================================================
+   Chỉnh đồ họa: logo, thanh công cụ, thẻ sự kiện
+   ============================================================ */
+.logo {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 36px; height: 36px; border-radius: 11px; color: var(--on-primary);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 68%, #fff), var(--primary));
+  box-shadow: 0 6px 14px -4px color-mix(in srgb, var(--primary) 60%, transparent), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
+.logo.sm { width: 28px; height: 28px; border-radius: 9px; }
+
+.toolbar-left { gap: 10px; }
+.app-title {
+  font-size: 21px; font-weight: 800; letter-spacing: -0.03em;
+  background: linear-gradient(90deg, var(--text), color-mix(in srgb, var(--text) 62%, var(--primary)));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.week-label {
+  padding: 6px 14px; border-radius: 999px; background: var(--surface);
+  border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(20, 24, 50, .05); font-variant-numeric: tabular-nums;
+}
+.toolbar-nav .btn, .toolbar-nav .icon-btn, .toolbar-right .icon-btn { box-shadow: 0 1px 2px rgba(20, 24, 50, .05); }
+.icon-btn.bordered:hover { border-color: var(--primary); color: var(--primary); }
+.toolbar-right select { box-shadow: 0 1px 2px rgba(20, 24, 50, .05); }
+.btn-primary {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--primary) 82%, #fff), var(--primary));
+  box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--primary) 80%, transparent), inset 0 1px 0 rgba(255, 255, 255, .2);
+}
+.btn-primary:hover:not(:disabled) { background-image: linear-gradient(180deg, color-mix(in srgb, var(--primary-hover) 82%, #fff), var(--primary-hover)); }
+.brand { gap: 10px; }
+
+.event {
+  border-radius: 10px;
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .6), rgba(255, 255, 255, 0) 62%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ev-color) 20%, transparent), 0 2px 5px -1px rgba(20, 24, 50, .12);
+}
+:root[data-theme="dark"] .event {
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .07), rgba(255, 255, 255, 0) 62%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ev-color) 30%, transparent), 0 3px 8px -2px rgba(0, 0, 0, .5);
+}
+.event:hover { box-shadow: 0 0 0 1px color-mix(in srgb, var(--ev-color) 45%, transparent), 0 10px 22px -8px rgba(20, 24, 50, .35); }
+.event.conflict, :root[data-theme="dark"] .event.conflict { box-shadow: inset 0 0 0 1.5px var(--warning), 0 2px 5px -1px rgba(20, 24, 50, .12); }
+.ev-title { font-size: 13px; letter-spacing: -0.01em; }
+.ev-time { font-variant-numeric: tabular-nums; }
+.ev-meta { text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
+.ev-check { border-radius: 6px; }
+
+/* Thẻ hẹp (ví dụ hai sự kiện trùng giờ chia đôi cột): bớt chi tiết để không bị tràn chữ */
+.event { container-type: inline-size; }
+.ev-cat { white-space: nowrap; }
+@container (max-width: 118px) { .ev-cat { display: none; } }
+@container (max-width: 90px) { .ev-meta, .ev-note { display: none; } }
