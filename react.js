@@ -37,6 +37,7 @@ const HOUR_OPTIONS = {
 const DEFAULT_SETTINGS = {
   hours: '6-23', theme: null, soundOn: true, volume: 0.7, notifyOn: false,
   syncEnabled: false, syncUrl: '', syncToken: '', lastSync: null,
+  taskSpeak: true, taskPhrase: 'Đến giờ {ghi chú} rồi cậu chủ ơi',
 };
 
 /* ---------- Tiện ích ngày giờ (giờ địa phương) ---------- */
@@ -80,11 +81,14 @@ const RE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const validDateStr = (s) => typeof s === 'string' && RE_DATE.test(s) && toISODate(parseISODate(s)) === s;
 
 const NOTE_MAX = 500; // số ký tự tối đa của một ghi chú
+const HOUR_MS = 3600000;
+// Việc cần làm không có giờ kết thúc: lưu giờ kết thúc ảo (+30 phút) để dữ liệu vẫn hợp lệ
+const taskEnd = (start) => minToTime(Math.min(timeToMin(start) + 30, 1439));
 const SHORTCUTS = [
   [['←'], 'Tuần trước'],
   [['→'], 'Tuần sau'],
   [['T'], 'Về hôm nay'],
-  [['N'], 'Thêm sự kiện'],
+  [['N'], 'Thêm sự kiện (hoặc thêm việc khi đang ở tab Việc cần làm)'],
   [['?'], 'Mở bảng phím tắt này'],
   [['Esc'], 'Đóng hộp thoại (hoặc hủy khi đang kéo thẻ)'],
 ];
@@ -130,14 +134,17 @@ function sanitizeEvent(raw) {
   if (!raw || typeof raw !== 'object') return { error: 'không phải đối tượng' };
   const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, 120) : '';
   if (!title) return { error: 'thiếu tiêu đề' };
-  if (!RE_TIME.test(raw.startTime) || !RE_TIME.test(raw.endTime)) return { error: 'giờ không hợp lệ' };
-  if (timeToMin(raw.endTime) <= timeToMin(raw.startTime)) return { error: 'giờ kết thúc phải sau giờ bắt đầu' };
+  const isTask = raw.task === true;
+  if (!RE_TIME.test(raw.startTime)) return { error: 'giờ không hợp lệ' };
+  const endRaw = isTask ? taskEnd(raw.startTime) : raw.endTime;
+  if (!RE_TIME.test(endRaw)) return { error: 'giờ không hợp lệ' };
+  if (!isTask && timeToMin(endRaw) <= timeToMin(raw.startTime)) return { error: 'giờ kết thúc phải sau giờ bắt đầu' };
   const ev = {
     id: typeof raw.id === 'string' && raw.id ? raw.id.slice(0, 64) : uid(),
     title,
     category: CAT_IDS.includes(raw.category) ? raw.category : 'other',
     startTime: raw.startTime,
-    endTime: raw.endTime,
+    endTime: endRaw,
     remindMin: Number.isFinite(raw.remindMin) && raw.remindMin >= 0 && raw.remindMin <= 10080 ? Math.round(raw.remindMin) : 0,
     kind: raw.kind,
     exceptions: {},
@@ -145,6 +152,13 @@ function sanitizeEvent(raw) {
     notes: sanitizeNotes(raw.notes),
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
+  if (isTask) {
+    if (raw.kind !== 'once') return { error: 'việc cần làm chỉ có kiểu một lần' };
+    ev.task = true;
+    ev.remindMin = 0;
+    ev.repeatMode = raw.repeatMode === 'eod' ? 'eod' : 'times';
+    ev.repeatN = raw.repeatN === 3 ? 3 : 2;
+  }
   if (raw.kind === 'once') {
     if (!validDateStr(raw.date)) return { error: 'ngày không hợp lệ' };
     ev.date = raw.date;
@@ -183,6 +197,8 @@ function migrateData(p) {
   st.syncUrl = typeof st.syncUrl === 'string' ? st.syncUrl : '';
   st.syncToken = typeof st.syncToken === 'string' ? st.syncToken : '';
   st.lastSync = Number.isFinite(st.lastSync) ? st.lastSync : null;
+  st.taskSpeak = st.taskSpeak !== false;
+  st.taskPhrase = typeof st.taskPhrase === 'string' ? st.taskPhrase.slice(0, 120) : DEFAULT_SETTINGS.taskPhrase;
   const tombstones = {};
   if (p && p.tombstones && typeof p.tombstones === 'object') {
     Object.keys(p.tombstones).forEach((k) => {
@@ -350,6 +366,37 @@ function describeSeries(s) {
   return `${days} · ${t} · ${fmtDMY(s.rangeStart)} → ${fmtDMY(s.rangeEnd)}`;
 }
 
+/* ---------- Việc cần làm (có giờ bắt đầu, không có giờ kết thúc) ---------- */
+const isTask = (s) => !!s && s.task === true;
+// Số thứ tự lần nhắc cuối (0 = chỉ nhắc đúng giờ). Nhắc lần k vào lúc bắt đầu + k giờ.
+function taskLastK(s) {
+  if (s.repeatMode === 'eod') {
+    const endOfDay = dateTimeMs(toISODate(addDays(parseISODate(s.date), 1)), '00:00');
+    return Math.max(0, Math.floor((endOfDay - 1 - dateTimeMs(s.date, s.startTime)) / HOUR_MS));
+  }
+  return (s.repeatN === 3 ? 3 : 2) - 1;
+}
+const taskNote = (s) => (s.notes && s.notes[s.date] && s.notes[s.date].v) || '';
+const taskDone = (s) => (s.done && s.done[s.date] && s.done[s.date].v ? s.done[s.date] : null);
+// Điền {ghi chú} (trống thì dùng tiêu đề) và {tên} vào câu nhắc
+function fillPhrase(tpl, s) {
+  const t = (tpl && tpl.trim()) || DEFAULT_SETTINGS.taskPhrase;
+  return t.replace(/\{\s*ghi\s*ch[úu]\s*\}/gi, () => taskNote(s) || s.title)
+    .replace(/\{\s*t[êe]n\s*\}/gi, () => s.title);
+}
+function speakText(text, volume) {
+  try {
+    if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'vi-VN';
+    u.volume = Math.min(1, Math.max(0, volume));
+    const v = window.speechSynthesis.getVoices().find((x) => /^vi/i.test(x.lang));
+    if (v) u.voice = v;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  } catch (e) { /* bỏ qua */ }
+}
+
 /* ---------- Dữ liệu nhắc gửi lên Apps Script ---------- */
 function buildReminderPayload(events) {
   const from = startOfDay(new Date());
@@ -357,6 +404,7 @@ function buildReminderPayload(events) {
   const tz = tzOffsetStr();
   const out = [];
   events.forEach((s) => {
+    if (isTask(s)) return; // việc cần làm chỉ nhắc khi mở tab
     occurrencesInRange(s, from, to).forEach((o) => {
       if (o.remindMin > 0 && !o.done) {
         out.push({ id: s.id, title: o.title, startISO: `${o.date}T${o.startTime}:00${tz}`, remindMin: o.remindMin });
@@ -793,6 +841,173 @@ function EventModal({ mode, series, onSave, onDelete, onClose }) {
 }
 
 /* ============================================================
+   Việc cần làm: hộp thoại thêm/sửa, xác nhận 2 bước, danh sách
+   ============================================================ */
+function TaskModal({ mode, series, defaults, onSave, onDelete, onClose }) {
+  const isEdit = mode.type === 'edit';
+  const [form, setForm] = useState(() => (isEdit ? {
+    title: series.title, date: series.date, startTime: series.startTime,
+    repeat: series.repeatMode === 'eod' ? 'eod' : String(series.repeatN === 3 ? 3 : 2), note: taskNote(series),
+  } : { title: '', date: defaults.date, startTime: defaults.startTime, repeat: '2', note: '' }));
+  const [errors, setErrors] = useState({});
+  const base = React.useId();
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const err = (k) => ({ id: `${base}-${k}`, 'aria-invalid': errors[k] ? 'true' : 'false', 'aria-describedby': errors[k] ? `${base}-${k}-err` : undefined });
+  const submit = (e) => {
+    e.preventDefault();
+    const er = {};
+    if (!form.title.trim()) er.title = 'Vui lòng nhập tên việc.';
+    if (!validDateStr(form.date)) er.date = 'Vui lòng chọn ngày.';
+    if (!RE_TIME.test(form.startTime)) er.startTime = 'Giờ không hợp lệ.';
+    setErrors(er);
+    const keys = Object.keys(er);
+    if (keys.length) { const el = document.getElementById(`${base}-${keys[0]}`); if (el) el.focus(); return; }
+    onSave(form, mode);
+  };
+  const REPEATS = [['2', 'Nhắc 2 lần'], ['3', 'Nhắc 3 lần'], ['eod', 'Đến hết ngày']];
+  return (
+    <Dialog title={isEdit ? 'Sửa việc cần làm' : 'Thêm việc cần làm'} onClose={onClose} wide>
+      <form onSubmit={submit} noValidate>
+        <Field id={`${base}-title`} label="Việc cần làm" error={errors.title}>
+          <input type="text" {...err('title')} value={form.title} maxLength={120} data-autofocus
+            placeholder="Ví dụ: Giặt quần áo" onChange={(e) => set({ title: e.target.value })} />
+        </Field>
+        <div className="field-row">
+          <Field id={`${base}-date`} label="Ngày" error={errors.date}>
+            <input type="date" {...err('date')} value={form.date} onChange={(e) => set({ date: e.target.value })} />
+          </Field>
+          <Field id={`${base}-startTime`} label="Giờ bắt đầu" error={errors.startTime}>
+            <input type="time" step="300" {...err('startTime')} value={form.startTime} onChange={(e) => set({ startTime: e.target.value })} />
+          </Field>
+        </div>
+        <div className="field">
+          <span className="field-label" id={`${base}-rep-label`}>Nhắc lại mỗi 1 tiếng nếu chưa tick</span>
+          <div className="segmented" role="group" aria-labelledby={`${base}-rep-label`}>
+            {REPEATS.map(([v, l]) => (
+              <button key={v} type="button" aria-pressed={form.repeat === v} onClick={() => set({ repeat: v })}>{l}</button>
+            ))}
+          </div>
+          <div className="hint">Nhắc lần đầu đúng giờ bắt đầu, sau đó mỗi 1 tiếng. "Đến hết ngày" nhắc tới 23:59 rồi dừng. Tick xong là dừng nhắc.</div>
+        </div>
+        <Field id={`${base}-note`} label="Ghi chú (dùng trong câu nhắc)" hint="Câu nhắc sẽ đọc phần ghi chú này. Để trống thì dùng tên việc.">
+          <textarea id={`${base}-note`} rows={2} maxLength={NOTE_MAX} value={form.note}
+            placeholder="Ví dụ: giặt đồ trắng" onChange={(e) => set({ note: e.target.value })} />
+        </Field>
+        <div className="dialog-foot">
+          {isEdit && (
+            <button type="button" className="btn btn-danger" onClick={() => onDelete(mode.seriesId)}>
+              <Icon name="Trash2" size={16} /> Xóa
+            </button>
+          )}
+          <span className="spacer" />
+          <button type="button" className="btn" onClick={onClose}>Hủy</button>
+          <button type="submit" className="btn btn-primary">Lưu</button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+// Xác nhận 2 bước trong một hộp thoại; tick xong không thể bỏ
+function TaskDoneDialog({ task, onConfirm, onClose }) {
+  const [step, setStep] = useState(1);
+  const nextRef = useRef(null);
+  useEffect(() => { if (nextRef.current) nextRef.current.focus(); }, [step]);
+  return (
+    <Dialog title={step === 1 ? 'Đã làm xong chưa?' : 'Xác nhận lần cuối'} onClose={onClose}>
+      <p className="muted" style={{ marginBottom: 6 }}>Bước {step}/2</p>
+      {step === 1
+        ? <p>Bạn đã hoàn thành <strong>{task.title}</strong> chưa?</p>
+        : <p>Chắc chắn đã xong <strong>{task.title}</strong>? Sau khi xác nhận, <strong>không thể bỏ tick</strong> và sẽ ngừng nhắc.</p>}
+      <div className="dialog-foot" style={{ marginTop: 18 }}>
+        <button type="button" className="btn" onClick={step === 1 ? onClose : () => setStep(1)}>{step === 1 ? 'Chưa xong' : 'Quay lại'}</button>
+        <button type="button" className="btn btn-primary" ref={nextRef}
+          onClick={step === 1 ? () => setStep(2) : () => { onConfirm(task.id); onClose(); }}>
+          {step === 1 ? 'Đã xong (1/2)' : 'Chắc chắn (2/2)'}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+function TasksView({ tasks, now, onAdd, onEdit, onDelete, onDone }) {
+  const nowMs = now.getTime();
+  const todayISO = toISODate(now);
+  const rows = useMemo(() => tasks.map((s) => {
+    const startMs = dateTimeMs(s.date, s.startTime);
+    const dn = taskDone(s);
+    const k = nowMs >= startMs ? Math.floor((nowMs - startMs) / HOUR_MS) : -1;
+    const lastK = taskLastK(s);
+    return {
+      s, startMs, doneAt: dn ? dn.t : null, started: nowMs >= startMs, note: taskNote(s),
+      sent: k < 0 ? 0 : Math.min(k, lastK) + 1,
+      nextMs: k + 1 <= lastK ? startMs + (k + 1) * HOUR_MS : null,
+    };
+  }), [tasks, nowMs]);
+  const due = rows.filter((r) => !r.doneAt && r.started).sort((a, b) => a.startMs - b.startMs);
+  const soon = rows.filter((r) => !r.doneAt && !r.started).sort((a, b) => a.startMs - b.startMs);
+  const finished = rows.filter((r) => r.doneAt && r.doneAt > nowMs - 7 * 86400000).sort((a, b) => b.doneAt - a.doneAt).slice(0, 30);
+
+  const statusText = (r) => {
+    const s = r.s;
+    const modeLabel = s.repeatMode === 'eod' ? 'mỗi giờ đến hết ngày' : `${s.repeatN === 3 ? 3 : 2} lần, mỗi giờ`;
+    if (r.doneAt) return `Xong lúc ${fmtClock(r.doneAt)} · ${fmtDM(toISODate(new Date(r.doneAt)))}`;
+    if (!r.started) return `Nhắc lúc ${s.startTime} (${modeLabel})`;
+    return `Đã nhắc ${r.sent} lần${r.nextMs ? ` · lần tới ${fmtClock(r.nextMs)}` : ' · hết lượt nhắc'}`;
+  };
+  const renderRow = (r) => {
+    const s = r.s;
+    return (
+      <li key={s.id} className={`task-row${r.doneAt ? ' done' : r.started ? ' due' : ''}`}>
+        {r.doneAt ? (
+          <span className="task-check locked" title="Đã xong, không thể bỏ tick"><Icon name="Check" size={16} /></span>
+        ) : (
+          <button type="button" className="task-check" disabled={!r.started} aria-label={`Đánh dấu đã xong: ${s.title}`}
+            title={r.started ? 'Đánh dấu đã xong' : 'Chỉ tích được từ giờ bắt đầu'} onClick={() => onDone(s.id)} />
+        )}
+        <div className="task-main">
+          <div className="task-title">{s.title}</div>
+          <div className="task-sub">
+            {s.startTime} · {fmtDM(s.date)}
+            {!r.doneAt && s.date < todayISO && <span className="task-badge late">Quá hạn</span>}
+          </div>
+          {r.note && <div className="task-note"><Icon name="FileText" size={12} /> {r.note}</div>}
+          <div className="task-sub">{statusText(r)}</div>
+        </div>
+        {!r.doneAt && (
+          <div className="task-actions">
+            <button type="button" className="icon-btn" aria-label={`Sửa ${s.title}`} onClick={() => onEdit(s.id)}><Icon name="Pencil" size={16} /></button>
+            <button type="button" className="icon-btn danger" aria-label={`Xóa ${s.title}`} onClick={() => onDelete(s.id)}><Icon name="Trash2" size={16} /></button>
+          </div>
+        )}
+      </li>
+    );
+  };
+  const group = (title, list, cls) => list.length > 0 && (
+    <section className={`task-group ${cls || ''}`}>
+      <h2>{title} <span className="muted">({list.length})</span></h2>
+      <ul className="task-list">{list.map(renderRow)}</ul>
+    </section>
+  );
+  return (
+    <div className="tasks-wrap">
+      <div className="tasks-card">
+        <p className="hint tasks-intro">Việc có giờ bắt đầu nhưng không có giờ kết thúc (giặt đồ, nấu cơm…). Ứng dụng nhắc đúng giờ rồi nhắc lại mỗi 1 tiếng cho tới khi bạn tick. Tick xong không bỏ được.</p>
+        {rows.length === 0 && (
+          <div className="empty-note">
+            Chưa có việc nào. <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={onAdd}><Icon name="Plus" size={14} /> Thêm việc</button>
+          </div>
+        )}
+        {group('Cần làm bây giờ', due, 'is-due')}
+        {group('Sắp tới', soon)}
+        {group('Đã xong (7 ngày gần đây)', finished, 'is-done')}
+        {rows.length > 0 && due.length + soon.length === 0 && <div className="empty-note">Không còn việc nào chưa làm.</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    Component: Toast
    ============================================================ */
 function ToastHost({ toasts, onDismiss }) {
@@ -1170,7 +1385,7 @@ function MiniCalendar({ weekStart, events, onPick }) {
 function Sidebar(props) {
   const {
     open, onClose, data, perm, weekStart, onPickDate, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
-    onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink,
+    onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink, onTestPhrase,
   } = props;
   const { settings, events } = data;
   const [query, setQuery] = useState('');
@@ -1222,6 +1437,23 @@ function Sidebar(props) {
                 onChange={(e) => onUpdateSettings({ volume: Number(e.target.value) })} />
             </div>
             <p className="hint">Thông báo trên trang chỉ hoạt động khi tab còn mở (kể cả ở chế độ nền). Khi đóng tab, hãy dùng nhắc qua email bên dưới.</p>
+          </div>
+        </section>
+
+        <section className="panel">
+          <h3>Câu nhắc cho việc cần làm</h3>
+          <div className="stack">
+            <label className="switch-row">
+              <input type="checkbox" role="switch" checked={settings.taskSpeak} onChange={(e) => onUpdateSettings({ taskSpeak: e.target.checked })} />
+              <span>Đọc to câu nhắc</span>
+            </label>
+            <div>
+              <label htmlFor="taskPhrase" className="status-line">Câu nhắc</label>
+              <input id="taskPhrase" type="text" maxLength={120} value={settings.taskPhrase}
+                placeholder={DEFAULT_SETTINGS.taskPhrase} onChange={(e) => onUpdateSettings({ taskPhrase: e.target.value })} />
+            </div>
+            <button type="button" className="btn btn-block" onClick={onTestPhrase}><Icon name="Volume2" size={16} /> Thử câu nhắc</button>
+            <p className="hint">{'Chèn {ghi chú} để thay bằng ghi chú của việc (trống thì dùng tên việc), {tên} để chèn tên việc. Giọng đọc tiếng Việt tùy thiết bị; không có thì chỉ phát chuông và hiện chữ.'}</p>
           </div>
         </section>
 
@@ -1320,6 +1552,12 @@ function App() {
   const systemDark = useSystemDark();
   const settings = data.settings;
   const resolvedTheme = settings.theme || (systemDark ? 'dark' : 'light');
+  const [view, setView] = useState('calendar');  // 'calendar' | 'tasks'
+  const [taskModal, setTaskModal] = useState(null); // { mode }
+  const [doneAsk, setDoneAsk] = useState(null);     // việc đang xác nhận tick
+  const calEvents = useMemo(() => data.events.filter((x) => !isTask(x)), [data.events]);
+  const taskList = useMemo(() => data.events.filter(isTask), [data.events]);
+  const sideData = useMemo(() => ({ ...data, events: calEvents }), [data, calEvents]);
 
   const [syncStatus, setSyncStatus] = useState(() => {
     if (data.settings.syncEnabled && localStorage.getItem(DIRTY_KEY) === '1') return { state: 'pending', message: 'Chờ đồng bộ…' };
@@ -1381,6 +1619,16 @@ function App() {
       if (st.soundOn) AudioEngine.chime(st.volume);
       if (st.notifyOn) showDesktopNotification(`⏰ ${o.title}`, body, `${o.seriesId}|${o.date}`);
     };
+    const fireTask = (t, k) => {
+      const st = dataRef.current.settings;
+      const text = fillPhrase(st.taskPhrase, t);
+      const total = t.repeatMode === 'eod' ? '' : `/${t.repeatN === 3 ? 3 : 2}`;
+      const body = `${t.startTime} · nhắc lần ${k + 1}${total}${k > 0 ? ' · bạn chưa tick xong' : ''}`;
+      pushToast({ kind: 'reminder', title: `⏰ ${text}`, message: body, ttl: 20000 });
+      if (st.soundOn) AudioEngine.chime(st.volume);
+      if (st.soundOn && st.taskSpeak) setTimeout(() => speakText(text, st.volume), 1300);
+      if (st.notifyOn) showDesktopNotification(`⏰ ${t.title}`, `${text} (${body})`, `task|${t.id}|${t.date}|${k}`);
+    };
     const scan = () => {
       const nowD = new Date();
       setNow(nowD);
@@ -1401,6 +1649,21 @@ function App() {
             fire(o, startMs);
           }
         });
+      });
+      // Việc cần làm: nhắc đúng giờ rồi mỗi 1 tiếng cho tới khi tick (hoặc hết lượt)
+      const yIso = toISODate(addDays(from, -1));
+      const tIso = toISODate(from);
+      dataRef.current.events.forEach((t) => {
+        if (!isTask(t) || (t.date !== yIso && t.date !== tIso) || taskDone(t)) return;
+        const startMs = dateTimeMs(t.date, t.startTime);
+        if (nowMs < startMs) return;
+        const k = Math.floor((nowMs - startMs) / HOUR_MS);
+        if (k > taskLastK(t)) return;
+        const pre = `task|${t.id}|${t.date}|${t.startTime}|`;
+        if (notified[pre + k]) return;
+        for (let i = 0; i <= k; i += 1) notified[pre + i] = nowMs; // lỡ mốc cũ thì không báo dồn
+        changed = true;
+        fireTask(t, k);
       });
       if (changed) saveNotified(notified);
     };
@@ -1795,6 +2058,62 @@ function App() {
     pushToast({ kind: 'success', title: how === 'replace' ? 'Đã ghi đè dữ liệu' : 'Đã gộp dữ liệu', message: `${imp.events.length} sự kiện từ ${imp.fileName}.` });
   };
 
+  /* ----- Việc cần làm ----- */
+  const taskDefaults = () => {
+    const m = now.getHours() * 60 + now.getMinutes();
+    return { date: toISODate(now), startTime: minToTime(Math.min(Math.ceil((m + 1) / 5) * 5, 1435)) };
+  };
+  const openNewTask = () => { setTaskModal({ mode: { type: 'new' } }); setSidebarOpen(false); };
+  const saveTask = (f, mode) => {
+    const ts = Date.now();
+    mutateEvents((list) => {
+      const old = mode.type === 'edit' ? list.find((x) => x.id === mode.seriesId) : null;
+      if (mode.type === 'edit' && (!old || taskDone(old))) return list; // việc đã xong thì khóa
+      let t = {
+        id: old ? old.id : uid(), title: f.title.trim(), category: 'other', startTime: f.startTime, endTime: taskEnd(f.startTime),
+        remindMin: 0, kind: 'once', date: f.date, task: true, repeatMode: f.repeat === 'eod' ? 'eod' : 'times',
+        repeatN: f.repeat === '3' ? 3 : 2, exceptions: {}, done: old ? { ...old.done } : {}, notes: old ? { ...old.notes } : {}, updatedAt: ts,
+      };
+      if (old && old.date !== f.date && t.notes[old.date]) { t.notes[f.date] = t.notes[old.date]; delete t.notes[old.date]; }
+      t = withNote(t, f.date, f.note, ts);
+      return old ? list.map((x) => (x.id === old.id ? t : x)) : [...list, t];
+    });
+    setTaskModal(null);
+    pushToast({ kind: 'success', title: mode.type === 'new' ? 'Đã thêm việc cần làm' : 'Đã lưu thay đổi' });
+  };
+  const requestDeleteTask = (id) => {
+    const t = dataRef.current.events.find((x) => x.id === id);
+    if (!t) return;
+    setTaskModal(null);
+    setConfirm({ title: 'Xóa việc?', message: `Việc "${t.title}" sẽ bị xóa.`, confirmLabel: 'Xóa', danger: true, onConfirm: () => deleteOcc(id, null, 'all') });
+  };
+  // Bấm tick: chỉ được từ giờ bắt đầu, rồi hỏi xác nhận 2 bước
+  const askDoneTask = (id) => {
+    const t = dataRef.current.events.find((x) => x.id === id);
+    if (!t || taskDone(t)) return;
+    if (dateTimeMs(t.date, t.startTime) > Date.now()) {
+      pushToast({ kind: 'info', title: 'Chưa đến giờ', message: 'Chỉ tích "đã xong" được từ giờ bắt đầu.' });
+      return;
+    }
+    setDoneAsk(t);
+  };
+  const completeTask = (id) => {
+    const ts = Date.now();
+    mutateEvents((list) => list.map((x) => {
+      if (x.id !== id || !isTask(x) || taskDone(x)) return x; // chỉ tick một chiều, không bỏ tick
+      return { ...x, done: { ...(x.done || {}), [x.date]: { v: true, t: ts } }, updatedAt: ts };
+    }));
+    pushToast({ kind: 'success', title: 'Đã ghi nhận hoàn thành', message: 'Ngừng nhắc việc này.' });
+  };
+  const testPhrase = () => {
+    const st = dataRef.current.settings;
+    AudioEngine.chime(st.volume);
+    const text = fillPhrase(st.taskPhrase, { title: 'nấu cơm', date: '', notes: {} });
+    pushToast({ kind: 'reminder', title: `⏰ ${text}`, message: 'Câu nhắc thử' });
+    setTimeout(() => speakText(text, st.volume), 1300);
+  };
+  const dueCount = useMemo(() => taskList.filter((x) => !taskDone(x) && dateTimeMs(x.date, x.startTime) <= now.getTime()).length, [taskList, now]);
+
   /* ----- Điều hướng tuần ----- */
   // Đánh dấu "đã làm" cho một buổi (bấm lần nữa để bỏ)
   const toggleDone = (seriesId, date) => {
@@ -1854,7 +2173,7 @@ function App() {
   // Bấm một ngày trong lịch tháng: nhảy tới tuần chứa ngày đó (điện thoại thì đóng ngăn kéo)
   const pickDate = (d) => { goWeek(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
   const weekLabel = `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
-  keyActions.current = { prev: () => shiftWeek(-1), next: () => shiftWeek(1), today: goToday, add: () => openNew(), help: () => setShortcutsOpen(true) };
+  keyActions.current = { prev: () => shiftWeek(-1), next: () => shiftWeek(1), today: goToday, add: () => (view === 'tasks' ? openNewTask() : openNew()), help: () => setShortcutsOpen(true) };
 
   // Phím tắt toàn trang (không hoạt động khi đang gõ hoặc khi có hộp thoại mở)
   useEffect(() => {
@@ -1887,40 +2206,62 @@ function App() {
             <span className="logo" aria-hidden="true"><Icon name="Clock" size={20} /></span>
             <h1 className="app-title">Thời gian biểu</h1>
           </div>
-          <div className="toolbar-nav">
+          {view === 'calendar' && <div className="toolbar-nav">
             <button type="button" className="icon-btn bordered" aria-label="Tuần trước" onClick={() => shiftWeek(-1)}><Icon name="ChevronLeft" /></button>
             <button type="button" className="btn" onClick={goToday}>Hôm nay</button>
             <button type="button" className="icon-btn bordered" aria-label="Tuần sau" onClick={() => shiftWeek(1)}><Icon name="ChevronRight" /></button>
             <span className="week-label" aria-live="polite">{weekLabel}</span>
-          </div>
+          </div>}
+          {view === 'tasks' && <div className="toolbar-nav"><span className="week-label">Việc cần làm</span></div>}
           <div className="toolbar-right">
-            <select aria-label="Khung giờ hiển thị" value={settings.hours} onChange={(e) => updateSettings({ hours: e.target.value })}>
-              {Object.keys(HOUR_OPTIONS).map((k) => <option key={k} value={k}>{HOUR_OPTIONS[k].label}</option>)}
-            </select>
+            {view === 'calendar' && (
+              <select aria-label="Khung giờ hiển thị" value={settings.hours} onChange={(e) => updateSettings({ hours: e.target.value })}>
+                {Object.keys(HOUR_OPTIONS).map((k) => <option key={k} value={k}>{HOUR_OPTIONS[k].label}</option>)}
+              </select>
+            )}
             <button type="button" className="icon-btn bordered" aria-label="Phím tắt (?)" title="Phím tắt (?)" onClick={() => setShortcutsOpen(true)}><Icon name="Keyboard" /></button>
             <button type="button" className="icon-btn bordered" aria-label={resolvedTheme === 'dark' ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
               onClick={() => updateSettings({ theme: resolvedTheme === 'dark' ? 'light' : 'dark' })}>
               <Icon name={resolvedTheme === 'dark' ? 'Sun' : 'Moon'} />
             </button>
-            <button type="button" className="btn btn-primary" onClick={() => openNew()}>
-              <Icon name="Plus" size={16} /> <span className="label">Thêm sự kiện</span>
+            <button type="button" className="btn btn-primary" onClick={() => (view === 'tasks' ? openNewTask() : openNew())}>
+              <Icon name="Plus" size={16} /> <span className="label">{view === 'tasks' ? 'Thêm việc' : 'Thêm sự kiện'}</span>
             </button>
           </div>
         </header>
+        <div className="view-bar">
+          <div className="segmented view-tabs" role="group" aria-label="Chọn màn hình">
+            <button type="button" aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><Icon name="CalendarDays" size={15} /> Lịch tuần</button>
+            <button type="button" aria-pressed={view === 'tasks'} onClick={() => setView('tasks')}>
+              <Icon name="ListChecks" size={15} /> Việc cần làm{dueCount > 0 && <span className="tab-badge" aria-label={`${dueCount} việc chưa làm`}>{dueCount}</span>}
+            </button>
+          </div>
+        </div>
+        {view === 'tasks' ? (
+          <TasksView tasks={taskList} now={now} onAdd={openNewTask} onEdit={(id) => setTaskModal({ mode: { type: 'edit', seriesId: id } })}
+            onDelete={requestDeleteTask} onDone={askDoneTask} />
+        ) : (
         <div className="grid-wrap">
-          <WeekGrid weekStart={weekStart} events={data.events} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
+          <WeekGrid weekStart={weekStart} events={calEvents} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
             onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
             onCardClick={openOccurrence} onToggleDone={toggleDone} onMoveOccurrence={moveOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
         </div>
+        )}
       </div>
 
       <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={data} perm={perm} weekStart={weekStart} onPickDate={pickDate}
+      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={sideData} perm={perm} weekStart={weekStart} onPickDate={pickDate}
         onToggleNotify={toggleNotify} onTestChime={() => AudioEngine.chime(settings.volume)}
         onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
         onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries}
         syncStatus={syncStatus} onSaveSync={saveSyncSettings} onToggleSync={toggleSync}
-        onTestEmail={testEmail} onSyncNow={() => doSync()} onCopyLink={copyConfigLink} />
+        onTestEmail={testEmail} onSyncNow={() => doSync()} onCopyLink={copyConfigLink} onTestPhrase={testPhrase} />
+
+      {taskModal && (taskModal.mode.type === 'new' || data.events.find((x) => x.id === taskModal.mode.seriesId)) && (
+        <TaskModal mode={taskModal.mode} series={taskModal.mode.type === 'edit' ? data.events.find((x) => x.id === taskModal.mode.seriesId) : null}
+          defaults={taskDefaults()} onSave={saveTask} onDelete={requestDeleteTask} onClose={() => setTaskModal(null)} />
+      )}
+      {doneAsk && <TaskDoneDialog task={doneAsk} onConfirm={completeTask} onClose={() => setDoneAsk(null)} />}
 
       {modal && (modal.mode.type === 'new' || modalSeries) && (
         <EventModal mode={modal.mode} series={modalSeries} onSave={saveForm}
