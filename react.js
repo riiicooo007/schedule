@@ -1172,6 +1172,68 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollSignal, hoursKey]);
 
+  // ----- Gợi ý còn lịch ở ngoài vùng nhìn thấy (trên / dưới / trái / phải) -----
+  const [hint, setHint] = useState({ up: 0, down: 0, left: 0, right: 0, headH: 88, sideW: 56 });
+  const measureHidden = () => {
+    const el = scrollRef.current;
+    const out = { up: [], down: [], left: [], right: [], headH: 88, sideW: 56 };
+    if (!el) return out;
+    const sr = el.getBoundingClientRect();
+    const head = el.querySelector('.grid-head');
+    const tc = el.querySelector('.time-col');
+    out.headH = head ? head.offsetHeight : 88;
+    out.sideW = tc ? tc.offsetWidth : 56;
+    el.querySelectorAll('.event').forEach((n) => {
+      const r = n.getBoundingClientRect();
+      if (r.height === 0) return;
+      if (r.top >= sr.bottom - 2) out.down.push(r.top - sr.top);
+      else if (r.bottom <= sr.top + out.headH + 2) out.up.push(r.top - sr.top);
+      if (r.left >= sr.right - 2) out.right.push(r.left - sr.left);
+      else if (r.right <= sr.left + out.sideW + 2) out.left.push(r.right - sr.left);
+    });
+    return out;
+  };
+  const refreshHint = () => {
+    const m = measureHidden();
+    setHint((p) => {
+      const n = { up: m.up.length, down: m.down.length, left: m.left.length, right: m.right.length, headH: m.headH, sideW: m.sideW };
+      return p.up === n.up && p.down === n.down && p.left === n.left && p.right === n.right && p.headH === n.headH && p.sideW === n.sideW ? p : n;
+    });
+  };
+  const hintRef = useRef(null);
+  hintRef.current = refreshHint;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    let raf = 0;
+    const run = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => hintRef.current()); };
+    el.addEventListener('scroll', run, { passive: true });
+    window.addEventListener('resize', run);
+    const ro = window.ResizeObserver ? new ResizeObserver(run) : null;
+    if (ro) ro.observe(el);
+    run();
+    return () => { cancelAnimationFrame(raf); el.removeEventListener('scroll', run); window.removeEventListener('resize', run); if (ro) ro.disconnect(); };
+  }, []);
+  // Dữ liệu, tuần hoặc khung giờ đổi: đo lại (cả sau khi hiệu ứng trượt tuần kết thúc)
+  useEffect(() => {
+    hintRef.current();
+    const t1 = setTimeout(() => hintRef.current(), 120);
+    const t2 = setTimeout(() => hintRef.current(), 700);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [events, weekStart, hoursKey, scrollSignal]);
+  const jump = (dir) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const m = measureHidden();
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const behavior = reduce ? 'auto' : 'smooth';
+    // Đưa sự kiện gần nhất bị khuất lên sát mép dưới thanh ngày (cách 24px)
+    if (dir === 'down' && m.down.length) el.scrollBy({ top: Math.min(...m.down) - m.headH - 24, behavior });
+    else if (dir === 'up' && m.up.length) el.scrollBy({ top: Math.max(...m.up) - m.headH - 24, behavior });
+    else if (dir === 'right' && m.right.length) el.scrollBy({ left: Math.min(...m.right) - m.sideW - 8, behavior });
+    else if (dir === 'left' && m.left.length) el.scrollBy({ left: Math.max(...m.left) - (el.clientWidth - 8), behavior });
+  };
+
   const handleColClick = (e, iso) => {
     if (suppressClick.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1204,6 +1266,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
           )}
         </div>
       )}
+      <div className="grid-viewport">
       <div className="grid-scroll" ref={scrollRef}>
         <div key={toISODate(weekStart)} className={`grid-inner slide-${slideDir}`} style={{ '--hour-h': `${HOUR_H}px` }}>
           <div className="grid-head">
@@ -1286,6 +1349,31 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
             })}
           </div>
         </div>
+      </div>
+      {hint.up > 0 && (
+        <button type="button" className="scroll-hint up" style={{ top: hint.headH + 8 }} onClick={() => jump('up')}
+          aria-label={`Còn ${hint.up} sự kiện phía trên, bấm để cuộn lên`}>
+          <Icon name="ChevronUp" size={16} /> {hint.up} sự kiện phía trên
+        </button>
+      )}
+      {hint.down > 0 && (
+        <button type="button" className="scroll-hint down" onClick={() => jump('down')}
+          aria-label={`Còn ${hint.down} sự kiện phía dưới, bấm để cuộn xuống`}>
+          <Icon name="ChevronDown" size={16} /> {hint.down} sự kiện bên dưới
+        </button>
+      )}
+      {hint.left > 0 && (
+        <button type="button" className="scroll-hint side left" style={{ left: hint.sideW + 6 }} onClick={() => jump('left')}
+          aria-label={`Còn ${hint.left} sự kiện bên trái, bấm để cuộn sang trái`}>
+          <Icon name="ChevronLeft" size={16} /> {hint.left}
+        </button>
+      )}
+      {hint.right > 0 && (
+        <button type="button" className="scroll-hint side right" onClick={() => jump('right')}
+          aria-label={`Còn ${hint.right} sự kiện bên phải, bấm để cuộn sang phải`}>
+          {hint.right} <Icon name="ChevronRight" size={16} />
+        </button>
+      )}
       </div>
     </div>
   );
