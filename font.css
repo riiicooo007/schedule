@@ -656,3 +656,27 @@ kbd {
 @keyframes hintDown { 50% { transform: translateY(3px); } }
 @keyframes hintLeft { 50% { transform: translateX(-3px); } }
 @keyframes hintRight { 50% { transform: translateX(3px); } }
+
+/* Mũi tên theo từng cột ngày: cột nào còn lịch bị khuất thì cột đó có mũi tên ở đáy / đỉnh */
+.col-hints { position: absolute; top: 0; bottom: 0; z-index: 12; pointer-events: none; }
+.col-hint {
+  position: absolute; left: 50%; transform: translateX(-50%); pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 2px; border: 0; cursor: pointer; font: inherit;
+  font-size: 12px; font-weight: 800; line-height: 1; padding: 6px 10px 6px 7px; border-radius: 999px;
+  background: var(--primary); color: var(--on-primary);
+  box-shadow: 0 6px 14px -5px rgba(20, 24, 50, .55), inset 0 1px 0 rgba(255, 255, 255, .22);
+  animation: hintIn .3s ease both;
+}
+.col-hint:hover { filter: brightness(1.1); }
+.col-hint.down { bottom: 10px; }
+.col-hint.up svg { animation: hintUp 1.3s ease-in-out infinite; }
+.col-hint.down svg { animation: hintDown 1.3s ease-in-out infinite; }
+
+/* Mèo thần tài vẫy tay ở đáy cột */
+.col-hint.cat { background: none; box-shadow: none; padding: 0; bottom: 4px; border-radius: 12px; }
+.col-hint.cat:hover { filter: none; }
+.cat-svg { display: block; overflow: visible; filter: drop-shadow(0 4px 5px rgba(20, 24, 50, .35)); }
+.cat-svg .cat-paw { transform-origin: 39.5px 34px; animation: catWave 1.1s ease-in-out infinite; }
+.cat-svg.hop { animation: catHop .6s cubic-bezier(.3, .7, .4, 1); }
+@keyframes catWave { 0%, 100% { transform: rotate(-16deg); } 50% { transform: rotate(14deg); } }
+@keyframes catHop { 0%, 100% { transform: translateY(0); } 35% { transform: translateY(-16px); } 65% { transform: translateY(0); } 82% { transform: translateY(-5px); } }
