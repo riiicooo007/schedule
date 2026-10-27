@@ -85,10 +85,13 @@ const HOUR_MS = 3600000;
 // Việc cần làm không có giờ kết thúc: lưu giờ kết thúc ảo (+30 phút) để dữ liệu vẫn hợp lệ
 const taskEnd = (start) => minToTime(Math.min(timeToMin(start) + 30, 1439));
 const SHORTCUTS = [
-  [['←'], 'Tuần trước'],
-  [['→'], 'Tuần sau'],
+  [['←'], 'Kỳ trước (ngày, tuần hoặc tháng, theo chế độ đang xem)'],
+  [['→'], 'Kỳ sau'],
   [['T'], 'Về hôm nay'],
-  [['N'], 'Thêm sự kiện (hoặc thêm việc khi đang ở tab Việc cần làm)'],
+  [['D'], 'Xem theo ngày'],
+  [['W'], 'Xem theo tuần'],
+  [['M'], 'Xem theo tháng'],
+  [['N'], 'Thêm sự kiện (hoặc thêm việc khi đang ở trang Việc cần làm)'],
   [['?'], 'Mở bảng phím tắt này'],
   [['Esc'], 'Đóng hộp thoại (hoặc hủy khi đang kéo thẻ)'],
 ];
@@ -490,6 +493,7 @@ const ICON_ALIASES = {
   TriangleAlert: ['TriangleAlert', 'AlertTriangle'],
   CalendarDays: ['CalendarDays', 'Calendar'],
   Trash2: ['Trash2', 'Trash'],
+  ListTodo: ['ListTodo', 'ListChecks', 'List'],
 };
 function Icon({ name, size = 18, className = '' }) {
   const lib = window.lucide;
@@ -510,6 +514,30 @@ function Icon({ name, size = 18, className = '' }) {
         delete attrs.key;
         return React.createElement(child[0], { key: i, ...attrs });
       })}
+    </svg>
+  );
+}
+
+/* Logo RICO: lịch có dấu tick và góc gấp xanh nhạt (SVG tự vẽ) */
+let logoSeq = 0;
+function Logo({ size = 36 }) {
+  const id = useMemo(() => { logoSeq += 1; return `rico${logoSeq}`; }, []);
+  return (
+    <svg className="logo-svg" viewBox="0 0 64 64" width={size} height={size} aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={`${id}a`} x1="8" y1="12" x2="56" y2="62" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#2f80ff" /><stop offset="1" stopColor="#3a46dc" />
+        </linearGradient>
+        <linearGradient id={`${id}b`} x1="40" y1="40" x2="60" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#8adbff" /><stop offset="1" stopColor="#4fb4f7" />
+        </linearGradient>
+      </defs>
+      <rect x="17" y="3" width="7" height="16" rx="3.5" fill="#2a6cf0" />
+      <rect x="40" y="3" width="7" height="16" rx="3.5" fill="#2a6cf0" />
+      <rect x="4" y="11" width="56" height="49" rx="12" fill={`url(#${id}a)`} />
+      <path d="M4 28 H60" stroke="#fff" strokeOpacity=".3" strokeWidth="2" />
+      <path d="M60 39 A21 21 0 0 0 39 60 H48 A12 12 0 0 0 60 48 Z" fill={`url(#${id}b)`} />
+      <path d="M19 42 l8.5 8.5 L44 33" fill="none" stroke="#fff" strokeWidth="6.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -1073,7 +1101,7 @@ function ToastHost({ toasts, onDismiss }) {
 /* ============================================================
    Component: WeekGrid (lưới thời gian biểu theo tuần)
    ============================================================ */
-function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onToggleDone, onMoveOccurrence, onShow24h }) {
+function WeekGrid({ weekStart, dayCount = 7, events, hoursKey, now, scrollSignal, slideDir, onSlotClick, onCardClick, onToggleDone, onMoveOccurrence, onShow24h }) {
   const cfg = HOUR_OPTIONS[hoursKey] || HOUR_OPTIONS['6-23'];
   const gridStart = cfg.start * 60;
   const gridEnd = cfg.end * 60;
@@ -1158,12 +1186,12 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
     window.addEventListener('keydown', dnd.current.key);
   };
 
-  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
+  const days = useMemo(() => Array.from({ length: dayCount }, (_, i) => addDays(weekStart, i)), [weekStart, dayCount]);
   const hours = useMemo(() => Array.from({ length: cfg.end - cfg.start }, (_, i) => cfg.start + i), [cfg]);
 
   const model = useMemo(() => {
     const all = [];
-    events.forEach((s) => all.push(...occurrencesInRange(s, days[0], days[6])));
+    events.forEach((s) => all.push(...occurrencesInRange(s, days[0], days[days.length - 1])));
     let hidden = 0;
     let conflicts = 0;
     const cols = days.map((d) => {
@@ -1187,7 +1215,7 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
     const nowMs = now.getTime();
     let started = 0;
     let done = 0;
-    events.forEach((s) => occurrencesInRange(s, days[0], days[6]).forEach((o) => {
+    events.forEach((s) => occurrencesInRange(s, days[0], days[days.length - 1]).forEach((o) => {
       if (dateTimeMs(o.date, o.startTime) <= nowMs) { started += 1; if (o.done) done += 1; }
     }));
     return { started, done };
@@ -1294,14 +1322,14 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
     <div className="grid-card">
       {summary.started > 0 && (
         <div className="week-summary" aria-live="polite">
-          <span><Icon name="Check" size={14} /> {weekHasToday ? 'Tuần này' : 'Tuần đang xem'}: <strong>{summary.done}/{summary.started}</strong> buổi đã làm</span>
+          <span><Icon name="Check" size={14} /> {dayCount === 1 ? (weekHasToday ? 'Hôm nay' : 'Ngày đang xem') : (weekHasToday ? 'Tuần này' : 'Tuần đang xem')}: <strong>{summary.done}/{summary.started}</strong> buổi đã làm</span>
           <span className="bar" aria-hidden="true"><i style={{ width: `${Math.round((summary.done / summary.started) * 100)}%` }} /></span>
         </div>
       )}
       {(model.hidden > 0 || model.conflicts > 0) && (
         <div className="grid-notes">
           {model.conflicts > 0 && (
-            <span className="note-chip"><Icon name="TriangleAlert" size={14} /> {model.conflicts} sự kiện trùng giờ trong tuần này</span>
+            <span className="note-chip"><Icon name="TriangleAlert" size={14} /> {model.conflicts} sự kiện trùng giờ {dayCount === 1 ? 'trong ngày này' : 'trong tuần này'}</span>
           )}
           {model.hidden > 0 && (
             <span className="note-chip">
@@ -1313,14 +1341,14 @@ function WeekGrid({ weekStart, events, hoursKey, now, scrollSignal, slideDir, on
       )}
       <div className="grid-viewport">
       <div className="grid-scroll" ref={scrollRef}>
-        <div key={toISODate(weekStart)} className={`grid-inner slide-${slideDir}`} style={{ '--hour-h': `${HOUR_H}px` }}>
+        <div key={toISODate(weekStart)} className={`grid-inner days-${dayCount} slide-${slideDir}`} style={{ '--hour-h': `${HOUR_H}px`, '--cols': dayCount }}>
           <div className="grid-head">
             <div className="head-corner" />
             {days.map((d, i) => {
               const isToday = toISODate(d) === todayISO;
               return (
                 <div key={i} className={`day-head${isToday ? ' today' : ''}`} aria-current={isToday ? 'date' : undefined}>
-                  <div className="dow">{WEEKDAYS[i]}</div>
+                  <div className="dow">{WEEKDAYS[wdIndex(d)]}</div>
                   <div className="dom">{pad(d.getDate())}/{pad(d.getMonth() + 1)}</div>
                 </div>
               );
@@ -1482,13 +1510,13 @@ function EmailSyncPanel({ settings, status, onSave, onToggle, onTest, onSyncNow,
 /* ============================================================
    Component: MiniCalendar (lịch tháng nhỏ để nhảy tuần)
    ============================================================ */
-function MiniCalendar({ weekStart, events, onPick }) {
+function MiniCalendar({ weekStart, spanDays = 7, events, onPick }) {
   const [month, setMonth] = useState(() => new Date(weekStart.getFullYear(), weekStart.getMonth(), 1));
   const wsKey = toISODate(weekStart);
   // Khi đổi tuần ở nơi khác (nút Tuần trước/sau, Hôm nay) thì lịch tháng đi theo
   useEffect(() => { setMonth(new Date(weekStart.getFullYear(), weekStart.getMonth(), 1)); }, [wsKey]);
   const todayISO = toISODate(new Date());
-  const weekEndISO = toISODate(addDays(weekStart, 6));
+  const weekEndISO = toISODate(addDays(weekStart, spanDays - 1));
   const cells = useMemo(() => {
     const first = startOfWeek(month);
     return Array.from({ length: 42 }, (_, i) => addDays(first, i));
@@ -1504,9 +1532,9 @@ function MiniCalendar({ weekStart, events, onPick }) {
   return (
     <div className="mini-cal">
       <div className="mini-head">
-        <button type="button" className="icon-btn" aria-label="Tháng trước" onClick={() => shift(-1)}><Icon name="ChevronLeft" size={16} /></button>
+        <button type="button" className="icon-btn" aria-label="Lịch nhỏ: tháng trước" onClick={() => shift(-1)}><Icon name="ChevronLeft" size={16} /></button>
         <strong aria-live="polite">Tháng {month.getMonth() + 1}/{month.getFullYear()}</strong>
-        <button type="button" className="icon-btn" aria-label="Tháng sau" onClick={() => shift(1)}><Icon name="ChevronRight" size={16} /></button>
+        <button type="button" className="icon-btn" aria-label="Lịch nhỏ: tháng sau" onClick={() => shift(1)}><Icon name="ChevronRight" size={16} /></button>
       </div>
       <div className="mini-grid">
         {WEEKDAYS.map((w) => <span key={w} className="mini-dow">{w}</span>)}
@@ -1532,41 +1560,222 @@ function MiniCalendar({ weekStart, events, onPick }) {
 }
 
 /* ============================================================
-   Component: Sidebar
+   Component: Menu trái (PC) / thanh dưới (điện thoại)
    ============================================================ */
-function Sidebar(props) {
-  const {
-    open, onClose, data, perm, weekStart, onPickDate, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
-    onEditSeries, onDeleteSeries, syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink, onTestPhrase,
-  } = props;
-  const { settings, events } = data;
+const NAV_ITEMS = [
+  { id: 'calendar', label: 'Lịch', icon: 'CalendarDays' },
+  { id: 'tasks', label: 'Việc cần làm', icon: 'ListChecks' },
+  { id: 'list', label: 'Lịch trình', icon: 'ListTodo' },
+  { id: 'settings', label: 'Cài đặt', icon: 'Settings' },
+];
+
+function NavRail({ page, onPage, dueCount }) {
+  return (
+    <nav className="rail" aria-label="Điều hướng chính">
+      <div className="rail-brand">
+        <Logo size={38} />
+        <div className="rail-name"><strong>RICO</strong><span>Routine, Itinerary &amp; Calendar Organizer</span></div>
+      </div>
+      <div className="rail-items">
+        {NAV_ITEMS.map((it) => (
+          <button key={it.id} type="button" className={`rail-item${page === it.id ? ' active' : ''}`}
+            aria-current={page === it.id ? 'page' : undefined} onClick={() => onPage(it.id)}>
+            <Icon name={it.icon} size={20} />
+            <span className="rail-label">{it.label}</span>
+            {it.id === 'tasks' && dueCount > 0 && <span className="tab-badge" aria-label={`${dueCount} việc chưa làm`}>{dueCount}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="rail-foot">Make time work for you.</div>
+    </nav>
+  );
+}
+
+/* ============================================================
+   Component: Xem theo tháng
+   ============================================================ */
+function MonthGrid({ cursor, events, now, slideDir, onOpenDay, onAddDay, onCardClick }) {
+  const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const lastDay = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+  const rows = Math.ceil((wdIndex(first) + lastDay) / 7);
+  const gridFirstMs = startOfWeek(first).getTime();
+  const cells = useMemo(() => Array.from({ length: rows * 7 }, (_, i) => addDays(new Date(gridFirstMs), i)), [rows, gridFirstMs]);
+  const byDay = useMemo(() => {
+    const map = new Map();
+    events.forEach((s) => occurrencesInRange(s, cells[0], cells[cells.length - 1]).forEach((o) => {
+      if (!map.has(o.date)) map.set(o.date, []);
+      map.get(o.date).push(o);
+    }));
+    map.forEach((list) => list.sort((a, b) => a.startTime.localeCompare(b.startTime)));
+    return map;
+  }, [events, cells]);
+  const todayISO = toISODate(now);
+  const MAX = 3;
+  return (
+    <div className="grid-card month-card">
+      <div className="month-scroll">
+        <div key={toISODate(first)} className={`month-inner slide-${slideDir}`}>
+          <div className="month-head">{WEEKDAYS.map((w) => <div key={w} className="mh">{w}</div>)}</div>
+          <div className="month-body" style={{ gridTemplateRows: `repeat(${rows}, minmax(104px, 1fr))` }}>
+            {cells.map((d) => {
+              const iso = toISODate(d);
+              const list = byDay.get(iso) || [];
+              const more = list.length - MAX;
+              const cls = ['month-cell'];
+              if (d.getMonth() !== cursor.getMonth()) cls.push('outside');
+              if (iso === todayISO) cls.push('today');
+              return (
+                <div key={iso} className={cls.join(' ')} data-iso={iso} onClick={() => onAddDay(iso)}>
+                  <button type="button" className="month-num" aria-label={`Xem ngày ${fmtDMY(iso)}${list.length ? `, ${list.length} sự kiện` : ''}`}
+                    onClick={(e) => { e.stopPropagation(); onOpenDay(d); }}>{d.getDate()}</button>
+                  <div className="month-chips">
+                    {list.slice(0, MAX).map((o) => (
+                      <button key={o.key} type="button" className={`month-chip${o.done ? ' done' : ''}`}
+                        style={{ '--ev-color': `var(--cat-${o.category})`, '--ev-bg': `var(--cat-${o.category}-bg)` }}
+                        title={`${o.title}\n${o.startTime} – ${o.endTime}`}
+                        aria-label={`${o.title}, ${fmtDMY(o.date)}, ${o.startTime} đến ${o.endTime}${o.done ? ', đã làm' : ''}`}
+                        onClick={(e) => { e.stopPropagation(); onCardClick(o.seriesId, o.date); }}>
+                        <span className="t">{o.startTime} {o.title}</span>
+                      </button>
+                    ))}
+                    {more > 0 && (
+                      <button type="button" className="month-more" onClick={(e) => { e.stopPropagation(); onOpenDay(d); }}>+{more} nữa</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Component: Bảng bên phải (lịch tháng nhỏ + việc hôm nay)
+   ============================================================ */
+function TodayList({ events, now, onOpen }) {
+  const iso = toISODate(now);
+  const items = useMemo(() => {
+    const d = parseISODate(iso);
+    const out = [];
+    events.forEach((s) => occurrencesInRange(s, d, d).forEach((o) => out.push(o)));
+    return out.sort((a, b) => a.startTime.localeCompare(b.startTime));
+  }, [events, iso]);
+  if (!items.length) return <div className="empty-note">Hôm nay chưa có sự kiện nào.</div>;
+  return (
+    <ul className="today-list">
+      {items.map((o) => (
+        <li key={o.key}>
+          <button type="button" className={`today-item${o.done ? ' done' : ''}`} style={{ '--c': `var(--cat-${o.category})` }}
+            onClick={() => onOpen(o.seriesId, o.date)}>
+            <span className="dot" aria-hidden="true" />
+            <span className="today-main"><span className="today-title">{o.title}</span><span className="today-time">{o.startTime} – {o.endTime}</span></span>
+            {o.done && <Icon name="Check" size={14} />}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Sidebar({ open, onClose, events, now, weekStart, spanDays, onPickDate, onOpenOccurrence }) {
+  return (
+    <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Lịch tháng và hôm nay">
+      <div className="sidebar-head">
+        <h2>Lịch của tôi</h2>
+        <button type="button" className="icon-btn" aria-label="Đóng bảng bên" onClick={onClose}><Icon name="X" /></button>
+      </div>
+      <div className="sidebar-scroll">
+        <section className="panel">
+          <h3>Lịch tháng</h3>
+          <MiniCalendar weekStart={weekStart} spanDays={spanDays} events={events} onPick={onPickDate} />
+        </section>
+        <section className="panel">
+          <h3>Hôm nay</h3>
+          <TodayList events={events} now={now} onOpen={onOpenOccurrence} />
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+/* ============================================================
+   Trang: Lịch trình (danh sách các chuỗi sự kiện)
+   ============================================================ */
+function SchedulePage({ events, onEditSeries, onDeleteSeries, onAdd }) {
   const [query, setQuery] = useState('');
-  const fileRef = useRef(null);
-
-  const notifyActive = perm === 'granted' && settings.notifyOn;
-  let notifyLabel = 'Bật thông báo';
-  let notifyBadge = null;
-  if (perm === 'unsupported') notifyLabel = 'Không hỗ trợ thông báo';
-  else if (perm === 'denied') { notifyLabel = 'Thông báo bị chặn'; notifyBadge = <span className="status-badge bad">Đã chặn</span>; }
-  else if (notifyActive) { notifyLabel = 'Thông báo đang bật'; notifyBadge = <span className="status-badge good">Bật</span>; }
-
   const groups = useMemo(() => {
     const q = fold(query.trim());
     const filtered = events.filter((s) => !q || fold(s.title).includes(q));
     const sorted = [...filtered].sort((a, b) => a.startTime.localeCompare(b.startTime) || a.title.localeCompare(b.title, 'vi'));
     return CATEGORIES.map((c) => ({ ...c, items: sorted.filter((s) => s.category === c.id) })).filter((g) => g.items.length);
   }, [events, query]);
+  return (
+    <div className="page-wrap">
+      <div className="page-card">
+        <section className="panel">
+          <h3>Lịch trình ({events.length})</h3>
+          <input type="search" placeholder="Tìm theo tiêu đề…" aria-label="Tìm sự kiện" value={query} onChange={(e) => setQuery(e.target.value)} />
+          {events.length === 0 && (
+            <div className="empty-note" style={{ marginTop: 12 }}>
+              Chưa có sự kiện nào. <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={onAdd}><Icon name="Plus" size={14} /> Thêm sự kiện</button>
+            </div>
+          )}
+          {events.length > 0 && groups.length === 0 && <div className="empty-note" style={{ marginTop: 12 }}>Không tìm thấy sự kiện phù hợp.</div>}
+          {groups.map((g) => (
+            <div className="list-group" key={g.id}>
+              <h4 style={{ '--c': `var(--cat-${g.id})` }}><span className="dot" />{g.label} <span className="muted">({g.items.length})</span></h4>
+              <ul className="sched-list">
+                {g.items.map((s) => (
+                  <li key={s.id} className="sched-item" style={{ '--c': `var(--cat-${s.category})` }}>
+                    <button type="button" className="sched-main" onClick={() => onEditSeries(s.id)} aria-label={`Sửa ${s.title}`}>
+                      <span className="sched-title">{s.title}</span>
+                      <span className="sched-sub">{describeSeries(s)}</span>
+                    </button>
+                    <button type="button" className="icon-btn danger" aria-label={`Xóa ${s.title}`} onClick={() => onDeleteSeries(s.id)}>
+                      <Icon name="Trash2" size={16} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Trang: Cài đặt
+   ============================================================ */
+function SettingsPage(props) {
+  const {
+    data, perm, onToggleNotify, onTestChime, onUpdateSettings, onExport, onImportFile,
+    syncStatus, onSaveSync, onToggleSync, onTestEmail, onSyncNow, onCopyLink, onTestPhrase, onOpenShortcuts,
+  } = props;
+  const { settings } = data;
+  const fileRef = useRef(null);
+  const notifyActive = perm === 'granted' && settings.notifyOn;
+  let notifyLabel = 'Bật thông báo';
+  let notifyBadge = null;
+  if (perm === 'unsupported') notifyLabel = 'Không hỗ trợ thông báo';
+  else if (perm === 'denied') { notifyLabel = 'Thông báo bị chặn'; notifyBadge = <span className="status-badge bad">Đã chặn</span>; }
+  else if (notifyActive) { notifyLabel = 'Thông báo đang bật'; notifyBadge = <span className="status-badge good">Bật</span>; }
+  const themeVal = settings.theme === 'light' || settings.theme === 'dark' ? settings.theme : 'auto';
 
   return (
-    <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Bảng điều khiển">
-      <div className="sidebar-head">
-        <div className="brand"><span className="logo sm" aria-hidden="true"><Icon name="Clock" size={16} /></span> <span>Thời gian biểu</span></div>
-        <button type="button" className="icon-btn" aria-label="Đóng bảng điều khiển" onClick={onClose}><Icon name="X" /></button>
-      </div>
-      <div className="sidebar-scroll">
+    <div className="page-wrap">
+      <div className="page-card">
         <section className="panel">
-          <h3>Lịch tháng</h3>
-          <MiniCalendar weekStart={weekStart} events={events} onPick={onPickDate} />
+          <h3>Giao diện</h3>
+          <div className="segmented" role="group" aria-label="Giao diện">
+            {[['auto', 'Theo hệ thống'], ['light', 'Sáng'], ['dark', 'Tối']].map(([v, l]) => (
+              <button key={v} type="button" aria-pressed={themeVal === v} onClick={() => onUpdateSettings({ theme: v === 'auto' ? null : v })}>{l}</button>
+            ))}
+          </div>
         </section>
 
         <section className="panel">
@@ -1610,31 +1819,6 @@ function Sidebar(props) {
         </section>
 
         <section className="panel">
-          <h3>Lịch trình ({events.length})</h3>
-          <input type="search" placeholder="Tìm theo tiêu đề…" aria-label="Tìm sự kiện" value={query} onChange={(e) => setQuery(e.target.value)} />
-          {events.length === 0 && <div className="empty-note" style={{ marginTop: 12 }}>Chưa có sự kiện nào. Bấm "Thêm sự kiện" hoặc bấm vào ô trống trên lưới.</div>}
-          {events.length > 0 && groups.length === 0 && <div className="empty-note" style={{ marginTop: 12 }}>Không tìm thấy sự kiện phù hợp.</div>}
-          {groups.map((g) => (
-            <div className="list-group" key={g.id}>
-              <h4 style={{ '--c': `var(--cat-${g.id})` }}><span className="dot" />{g.label} <span className="muted">({g.items.length})</span></h4>
-              <ul className="sched-list">
-                {g.items.map((s) => (
-                  <li key={s.id} className="sched-item" style={{ '--c': `var(--cat-${s.category})` }}>
-                    <button type="button" className="sched-main" onClick={() => onEditSeries(s.id)} aria-label={`Sửa ${s.title}`}>
-                      <span className="sched-title">{s.title}</span>
-                      <span className="sched-sub">{describeSeries(s)}</span>
-                    </button>
-                    <button type="button" className="icon-btn danger" aria-label={`Xóa ${s.title}`} onClick={() => onDeleteSeries(s.id)}>
-                      <Icon name="Trash2" size={16} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </section>
-
-        <section className="panel">
           <h3>Sao lưu và khôi phục</h3>
           <div className="row">
             <button type="button" className="btn" onClick={onExport}><Icon name="Download" size={16} /> Xuất .json</button>
@@ -1645,13 +1829,26 @@ function Sidebar(props) {
           <p className="hint" style={{ marginTop: 8 }}>File sao lưu không chứa URL và token email.</p>
         </section>
 
-        <details className="panel">
-          <summary>Đồng bộ thiết bị và nhắc email</summary>
+        <section className="panel">
+          <h3>Đồng bộ thiết bị và nhắc email</h3>
           <EmailSyncPanel settings={settings} status={syncStatus} onSave={onSaveSync} onToggle={onToggleSync}
             onTest={onTestEmail} onSyncNow={onSyncNow} onCopyLink={onCopyLink} />
-        </details>
+        </section>
+
+        <section className="panel about">
+          <h3>Giới thiệu</h3>
+          <div className="about-row">
+            <Logo size={44} />
+            <div>
+              <strong>RICO</strong>
+              <div className="muted">Routine, Itinerary &amp; Calendar Organizer</div>
+              <div className="muted">Make time work for you.</div>
+            </div>
+          </div>
+          <button type="button" className="btn btn-sm" style={{ marginTop: 10 }} onClick={onOpenShortcuts}><Icon name="Keyboard" size={15} /> Xem phím tắt</button>
+        </section>
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -1677,7 +1874,12 @@ function App() {
   const [data, setData] = useState(loadData);
   const dataRef = useRef(data);
   dataRef.current = data;
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  // cursor: ngày đang xem; mode: chế độ xem 'day' | 'week' | 'month'
+  const [cursor, setCursor] = useState(() => startOfDay(new Date()));
+  const [mode, setMode] = useState(() => {
+    try { const m = localStorage.getItem('tp_cal_mode'); return m === 'day' || m === 'month' ? m : 'week'; } catch (e) { return 'week'; }
+  });
+  const weekStart = useMemo(() => startOfWeek(cursor), [cursor]);
   const [slideDir, setSlideDir] = useState('next'); // hướng trượt khi đổi tuần
   const [now, setNow] = useState(() => new Date());
   const [scrollSignal, setScrollSignal] = useState(0);
@@ -1704,12 +1906,11 @@ function App() {
   const systemDark = useSystemDark();
   const settings = data.settings;
   const resolvedTheme = settings.theme || (systemDark ? 'dark' : 'light');
-  const [view, setView] = useState('calendar');  // 'calendar' | 'tasks'
+  const [page, setPage] = useState('calendar');  // 'calendar' | 'tasks' | 'list' | 'settings'
   const [taskModal, setTaskModal] = useState(null); // { mode }
   const [doneAsk, setDoneAsk] = useState(null);     // việc đang xác nhận tick
   const calEvents = useMemo(() => data.events.filter((x) => !isTask(x)), [data.events]);
   const taskList = useMemo(() => data.events.filter(isTask), [data.events]);
-  const sideData = useMemo(() => ({ ...data, events: calEvents }), [data, calEvents]);
 
   const [syncStatus, setSyncStatus] = useState(() => {
     if (data.settings.syncEnabled && localStorage.getItem(DIRTY_KEY) === '1') return { state: 'pending', message: 'Chờ đồng bộ…' };
@@ -2037,7 +2238,7 @@ function App() {
 
   /* ----- Thêm / sửa / xóa ----- */
   const defaultSlot = () => {
-    const days = Array.from({ length: 7 }, (_, i) => toISODate(addDays(weekStart, i)));
+    const days = mode === 'day' ? [toISODate(cursor)] : Array.from({ length: 7 }, (_, i) => toISODate(addDays(weekStart, i)));
     const todayISO = toISODate(now);
     const date = days.includes(todayISO) ? todayISO : days[0];
     const cfg = HOUR_OPTIONS[settings.hours] || HOUR_OPTIONS['6-23'];
@@ -2319,13 +2520,40 @@ function App() {
       message: `${occ.title} · ${t.startTime}–${t.endTime}${t.date !== fromDate ? ` · ${fmtDMY(t.date)}` : ''}` });
   };
   // Đổi tuần kèm hướng trượt: tuần sau trượt từ phải, tuần trước trượt từ trái
-  const goWeek = (next) => { setSlideDir(next.getTime() >= weekStart.getTime() ? 'next' : 'prev'); setWeekStart(next); };
-  const shiftWeek = (n) => goWeek(addDays(weekStart, n * 7));
-  const goToday = () => { goWeek(startOfWeek(new Date())); setScrollSignal((n) => n + 1); };
-  // Bấm một ngày trong lịch tháng: nhảy tới tuần chứa ngày đó (điện thoại thì đóng ngăn kéo)
-  const pickDate = (d) => { goWeek(startOfWeek(d)); if (isMobileView()) setSidebarOpen(false); };
-  const weekLabel = `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
-  keyActions.current = { prev: () => shiftWeek(-1), next: () => shiftWeek(1), today: goToday, add: () => (view === 'tasks' ? openNewTask() : openNew()), help: () => setShortcutsOpen(true) };
+  const goTo = (next, dir) => { setSlideDir(dir); setCursor(startOfDay(next)); };
+  // Lùi/tiến một ngày, một tuần hoặc một tháng tùy chế độ đang xem
+  const shiftView = (n) => {
+    if (mode === 'day') goTo(addDays(cursor, n), n > 0 ? 'next' : 'prev');
+    else if (mode === 'week') goTo(addDays(cursor, 7 * n), n > 0 ? 'next' : 'prev');
+    else goTo(addMonths(new Date(cursor.getFullYear(), cursor.getMonth(), 1), n), n > 0 ? 'next' : 'prev');
+  };
+  const goToday = () => { const t = new Date(); goTo(t, t >= cursor ? 'next' : 'prev'); setScrollSignal((n) => n + 1); };
+  // Bấm một ngày trong lịch tháng nhỏ: nhảy tới ngày đó (điện thoại thì đóng ngăn kéo)
+  const pickDate = (d) => { goTo(d, d >= cursor ? 'next' : 'prev'); setPage('calendar'); if (isMobileView()) setSidebarOpen(false); };
+  const changeMode = (m) => {
+    setMode(m);
+    setSlideDir('next');
+    try { localStorage.setItem('tp_cal_mode', m); } catch (e) { /* bỏ qua */ }
+  };
+  const goPage = (p) => { setPage(p); if (isMobileView()) setSidebarOpen(false); };
+  const unitName = mode === 'day' ? 'Ngày' : mode === 'week' ? 'Tuần' : 'Tháng';
+  const weekLabel = mode === 'day'
+    ? `${WEEKDAYS_LONG[wdIndex(cursor)]}, ${fmtDMY(toISODate(cursor))}`
+    : mode === 'month'
+      ? `Tháng ${cursor.getMonth() + 1}/${cursor.getFullYear()}`
+      : `${fmtDM(toISODate(weekStart))} – ${fmtDMY(toISODate(addDays(weekStart, 6)))}`;
+  const span = mode === 'day' ? { ws: cursor, n: 1 }
+    : mode === 'month' ? { ws: new Date(cursor.getFullYear(), cursor.getMonth(), 1), n: 0 }
+      : { ws: weekStart, n: 7 };
+  const PAGE_TITLES = { calendar: 'Lịch', tasks: 'Việc cần làm', list: 'Lịch trình', settings: 'Cài đặt' };
+  keyActions.current = {
+    prev: () => { if (page === 'calendar') shiftView(-1); },
+    next: () => { if (page === 'calendar') shiftView(1); },
+    today: goToday,
+    add: () => (page === 'tasks' ? openNewTask() : openNew()),
+    mode: (m) => { if (page === 'calendar') changeMode(m); },
+    help: () => setShortcutsOpen(true),
+  };
 
   // Phím tắt toàn trang (không hoạt động khi đang gõ hoặc khi có hộp thoại mở)
   useEffect(() => {
@@ -2341,6 +2569,9 @@ function App() {
       else if (k === 'ArrowRight') { e.preventDefault(); a.next(); }
       else if (k === 't' || k === 'T') { e.preventDefault(); a.today(); }
       else if (k === 'n' || k === 'N') { e.preventDefault(); a.add(); }
+      else if (k === 'd' || k === 'D') { e.preventDefault(); a.mode('day'); }
+      else if (k === 'w' || k === 'W') { e.preventDefault(); a.mode('week'); }
+      else if (k === 'm' || k === 'M') { e.preventDefault(); a.mode('month'); }
       else if (k === '?') { e.preventDefault(); a.help(); }
     };
     document.addEventListener('keydown', onKey);
@@ -2351,63 +2582,83 @@ function App() {
 
   return (
     <div className={`app${sideCollapsed ? ' side-collapsed' : ''}`}>
+      <NavRail page={page} onPage={goPage} dueCount={dueCount} />
       <div className="main">
         <header className="toolbar">
           <div className="toolbar-left">
-            <button type="button" className="icon-btn bordered" aria-label="Mở hoặc ẩn bảng điều khiển" onClick={togglePanel}><Icon name="Menu" /></button>
-            <span className="logo" aria-hidden="true"><Icon name="Clock" size={20} /></span>
-            <h1 className="app-title">Thời gian biểu</h1>
+            <span className="brand-m" aria-hidden="true"><Logo size={30} /></span>
+            <h1 className="app-title">{PAGE_TITLES[page]}</h1>
           </div>
-          {view === 'calendar' && <div className="toolbar-nav">
-            <button type="button" className="icon-btn bordered" aria-label="Tuần trước" onClick={() => shiftWeek(-1)}><Icon name="ChevronLeft" /></button>
-            <button type="button" className="btn" onClick={goToday}>Hôm nay</button>
-            <button type="button" className="icon-btn bordered" aria-label="Tuần sau" onClick={() => shiftWeek(1)}><Icon name="ChevronRight" /></button>
-            <span className="week-label" aria-live="polite">{weekLabel}</span>
-          </div>}
-          {view === 'tasks' && <div className="toolbar-nav"><span className="week-label">Việc cần làm</span></div>}
+          {page === 'calendar' && (
+            <div className="toolbar-nav">
+              <button type="button" className="icon-btn bordered" aria-label={`${unitName} trước`} onClick={() => shiftView(-1)}><Icon name="ChevronLeft" /></button>
+              <button type="button" className="btn" onClick={goToday}>Hôm nay</button>
+              <button type="button" className="icon-btn bordered" aria-label={`${unitName} sau`} onClick={() => shiftView(1)}><Icon name="ChevronRight" /></button>
+              <span className="week-label" aria-live="polite">{weekLabel}</span>
+            </div>
+          )}
           <div className="toolbar-right">
-            {view === 'calendar' && (
+            {page === 'calendar' && (
+              <div className="segmented mode-tabs" role="group" aria-label="Chế độ xem">
+                {[['day', 'Ngày'], ['week', 'Tuần'], ['month', 'Tháng']].map(([m, l]) => (
+                  <button key={m} type="button" aria-pressed={mode === m} onClick={() => changeMode(m)}>{l}</button>
+                ))}
+              </div>
+            )}
+            {page === 'calendar' && mode !== 'month' && (
               <select aria-label="Khung giờ hiển thị" value={settings.hours} onChange={(e) => updateSettings({ hours: e.target.value })}>
                 {Object.keys(HOUR_OPTIONS).map((k) => <option key={k} value={k}>{HOUR_OPTIONS[k].label}</option>)}
               </select>
             )}
-            <button type="button" className="icon-btn bordered" aria-label="Phím tắt (?)" title="Phím tắt (?)" onClick={() => setShortcutsOpen(true)}><Icon name="Keyboard" /></button>
+            <button type="button" className="icon-btn bordered kb-btn" aria-label="Phím tắt (?)" title="Phím tắt (?)" onClick={() => setShortcutsOpen(true)}><Icon name="Keyboard" /></button>
             <button type="button" className="icon-btn bordered" aria-label={resolvedTheme === 'dark' ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
               onClick={() => updateSettings({ theme: resolvedTheme === 'dark' ? 'light' : 'dark' })}>
               <Icon name={resolvedTheme === 'dark' ? 'Sun' : 'Moon'} />
             </button>
-            <button type="button" className="btn btn-primary" onClick={() => (view === 'tasks' ? openNewTask() : openNew())}>
-              <Icon name="Plus" size={16} /> <span className="label">{view === 'tasks' ? 'Thêm việc' : 'Thêm sự kiện'}</span>
-            </button>
+            {page !== 'settings' && (
+              <button type="button" className="btn btn-primary" onClick={() => (page === 'tasks' ? openNewTask() : openNew())}>
+                <Icon name="Plus" size={16} /> <span className="label">{page === 'tasks' ? 'Thêm việc' : 'Thêm sự kiện'}</span>
+              </button>
+            )}
+            <button type="button" className="icon-btn bordered" aria-label="Mở hoặc ẩn lịch tháng" title="Lịch tháng và hôm nay" onClick={togglePanel}><Icon name="CalendarDays" /></button>
           </div>
         </header>
-        <div className="view-bar">
-          <div className="segmented view-tabs" role="group" aria-label="Chọn màn hình">
-            <button type="button" aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><Icon name="CalendarDays" size={15} /> Lịch tuần</button>
-            <button type="button" aria-pressed={view === 'tasks'} onClick={() => setView('tasks')}>
-              <Icon name="ListChecks" size={15} /> Việc cần làm{dueCount > 0 && <span className="tab-badge" aria-label={`${dueCount} việc chưa làm`}>{dueCount}</span>}
-            </button>
-          </div>
-        </div>
-        {view === 'tasks' ? (
+        {page === 'tasks' && (
           <TasksView tasks={taskList} now={now} onAdd={openNewTask} onEdit={(id) => setTaskModal({ mode: { type: 'edit', seriesId: id } })}
             onDelete={requestDeleteTask} onDone={askDoneTask} />
-        ) : (
-        <div className="grid-wrap">
-          <WeekGrid weekStart={weekStart} events={calEvents} hoursKey={settings.hours} now={now} scrollSignal={scrollSignal} slideDir={slideDir}
-            onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
-            onCardClick={openOccurrence} onToggleDone={toggleDone} onMoveOccurrence={moveOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
-        </div>
+        )}
+        {page === 'list' && (
+          <SchedulePage events={calEvents} onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries} onAdd={() => openNew()} />
+        )}
+        {page === 'settings' && (
+          <SettingsPage data={data} perm={perm} onToggleNotify={toggleNotify} onTestChime={() => AudioEngine.chime(settings.volume)}
+            onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
+            syncStatus={syncStatus} onSaveSync={saveSyncSettings} onToggleSync={toggleSync}
+            onTestEmail={testEmail} onSyncNow={() => doSync()} onCopyLink={copyConfigLink} onTestPhrase={testPhrase}
+            onOpenShortcuts={() => setShortcutsOpen(true)} />
+        )}
+        {page === 'calendar' && mode === 'month' && (
+          <div className="grid-wrap">
+            <MonthGrid cursor={cursor} events={calEvents} now={now} slideDir={slideDir}
+              onOpenDay={(d) => { setSlideDir('next'); setCursor(startOfDay(d)); changeMode('day'); }}
+              onAddDay={(iso) => { const ds = defaultSlot(); openNew({ date: iso, startTime: ds.startTime, endTime: ds.endTime }); }}
+              onCardClick={openOccurrence} />
+          </div>
+        )}
+        {page === 'calendar' && mode !== 'month' && (
+          <div className="grid-wrap">
+            <WeekGrid weekStart={mode === 'day' ? cursor : weekStart} dayCount={mode === 'day' ? 1 : 7} events={calEvents} hoursKey={settings.hours}
+              now={now} scrollSignal={scrollSignal} slideDir={slideDir}
+              onSlotClick={(date, startTime, endTime) => openNew({ date, startTime, endTime })}
+              onCardClick={openOccurrence} onToggleDone={toggleDone} onMoveOccurrence={moveOccurrence} onShow24h={() => updateSettings({ hours: '0-23' })} />
+          </div>
         )}
       </div>
 
       <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} data={sideData} perm={perm} weekStart={weekStart} onPickDate={pickDate}
-        onToggleNotify={toggleNotify} onTestChime={() => AudioEngine.chime(settings.volume)}
-        onUpdateSettings={updateSettings} onExport={exportData} onImportFile={importFile}
-        onEditSeries={editSeries} onDeleteSeries={requestDeleteSeries}
-        syncStatus={syncStatus} onSaveSync={saveSyncSettings} onToggleSync={toggleSync}
-        onTestEmail={testEmail} onSyncNow={() => doSync()} onCopyLink={copyConfigLink} onTestPhrase={testPhrase} />
+      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} events={calEvents} now={now} weekStart={span.ws} spanDays={span.n}
+        onPickDate={pickDate}
+        onOpenOccurrence={(id, date) => { openOccurrence(id, date); if (isMobileView()) setSidebarOpen(false); }} />
 
       {taskModal && (taskModal.mode.type === 'new' || data.events.find((x) => x.id === taskModal.mode.seriesId)) && (
         <TaskModal mode={taskModal.mode} series={taskModal.mode.type === 'edit' ? data.events.find((x) => x.id === taskModal.mode.seriesId) : null}
