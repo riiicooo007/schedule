@@ -1012,7 +1012,9 @@ function TasksView({ tasks, now, onAdd, onEdit, onDelete, onDone }) {
       nextMs: k + 1 <= lastK ? startMs + (k + 1) * HOUR_MS : null,
     };
   }), [tasks, nowMs]);
-  const due = rows.filter((r) => !r.doneAt && r.started).sort((a, b) => a.startMs - b.startMs);
+  // Quá hạn: đã sang ngày hôm sau mà chưa tick
+  const overdue = rows.filter((r) => !r.doneAt && r.s.date < todayISO).sort((a, b) => a.startMs - b.startMs);
+  const due = rows.filter((r) => !r.doneAt && r.started && r.s.date >= todayISO).sort((a, b) => a.startMs - b.startMs);
   const soon = rows.filter((r) => !r.doneAt && !r.started).sort((a, b) => a.startMs - b.startMs);
   const finished = rows.filter((r) => r.doneAt && r.doneAt > nowMs - 7 * 86400000).sort((a, b) => b.doneAt - a.doneAt).slice(0, 30);
 
@@ -1026,7 +1028,7 @@ function TasksView({ tasks, now, onAdd, onEdit, onDelete, onDone }) {
   const renderRow = (r) => {
     const s = r.s;
     return (
-      <li key={s.id} className={`task-row${r.doneAt ? ' done' : r.started ? ' due' : ''}`}>
+      <li key={s.id} className={`task-row${r.doneAt ? ' done' : r.s.date < todayISO ? ' overdue' : r.started ? ' due' : ''}`}>
         {r.doneAt ? (
           <span className="task-check locked" title="Đã xong, không thể bỏ tick"><Icon name="Check" size={16} /></span>
         ) : (
@@ -1066,10 +1068,11 @@ function TasksView({ tasks, now, onAdd, onEdit, onDelete, onDone }) {
             Chưa có việc nào. <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={onAdd}><Icon name="Plus" size={14} /> Thêm việc</button>
           </div>
         )}
+        {group('Quá hạn chưa làm', overdue, 'is-overdue')}
         {group('Cần làm bây giờ', due, 'is-due')}
         {group('Sắp tới', soon)}
         {group('Đã xong (7 ngày gần đây)', finished, 'is-done')}
-        {rows.length > 0 && due.length + soon.length === 0 && <div className="empty-note">Không còn việc nào chưa làm.</div>}
+        {rows.length > 0 && overdue.length + due.length + soon.length === 0 && <div className="empty-note">Không còn việc nào chưa làm.</div>}
       </div>
     </div>
   );
@@ -1371,16 +1374,17 @@ function WeekGrid({ weekStart, dayCount = 7, events, hoursKey, now, scrollSignal
                     const w = 100 / it.cols;
                     const compact = h < 38;
                     const started = dateTimeMs(it.date, it.startTime) <= now.getTime();
+                    const late = it.date < todayISO && !it.done; // đã sang ngày khác mà chưa làm
                     return (
-                      <div key={it.key} className={`event${it.conflict ? ' conflict' : ''}${compact ? ' compact' : ''}${drag && drag.key === it.key ? ' dragging' : ''}`}
+                      <div key={it.key} className={`event${it.conflict ? ' conflict' : ''}${late ? ' overdue' : ''}${compact ? ' compact' : ''}${drag && drag.key === it.key ? ' dragging' : ''}`}
                         onPointerDown={(e) => startDrag(e, it, 'move')}
                         style={{
                           animationDelay: `${ci * 0.05}s`, top, height: h, left: `calc(${it.col * w}% + 2px)`, width: `calc(${w}% - 4px)`,
                           '--ev-color': `var(--cat-${it.category})`, '--ev-bg': `var(--cat-${it.category}-bg)`,
                         }}>
                         <button type="button" className="ev-open"
-                          title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${it.conflict ? '\n⚠ Trùng giờ' : ''}${it.done ? '\n✓ Đã làm' : ''}${it.note ? '\n' + it.note : ''}`}
-                          aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${it.conflict ? ', trùng giờ' : ''}${it.done ? ', đã làm' : ''}${it.note ? ', có ghi chú' : ''}`}
+                          title={`${it.title}\n${it.startTime} – ${it.endTime} · ${catLabel(it.category)}${late ? '\n⚠ Quá hạn, chưa làm' : ''}${it.conflict ? '\n⚠ Trùng giờ' : ''}${it.done ? '\n✓ Đã làm' : ''}${it.note ? '\n' + it.note : ''}`}
+                          aria-label={`${it.title}, ${fmtDMY(it.date)}, ${it.startTime} đến ${it.endTime}, ${catLabel(it.category)}${late ? ', quá hạn chưa làm' : ''}${it.conflict ? ', trùng giờ' : ''}${it.done ? ', đã làm' : ''}${it.note ? ', có ghi chú' : ''}`}
                           onClick={(e) => { e.stopPropagation(); if (suppressClick.current) return; onCardClick(it.seriesId, it.date); }}>
                           <span className="ev-title">{it.title}</span>
                           <span className="ev-time">{it.startTime} – {it.endTime}</span>
@@ -1389,6 +1393,7 @@ function WeekGrid({ weekStart, dayCount = 7, events, hoursKey, now, scrollSignal
                               {it.kind === 'weekly' && <Icon name="Repeat" size={12} />}
                               {it.remindMin > 0 && !it.done && <Icon name="Bell" size={12} />}
                               {it.conflict && <Icon name="TriangleAlert" size={12} />}
+                              {late && <span className="ev-late">Quá hạn</span>}
                               {it.note && <Icon name="FileText" size={12} />}
                               <span className="ev-cat">{catLabel(it.category)}</span>
                             </span>
@@ -1524,7 +1529,12 @@ function MiniCalendar({ weekStart, spanDays = 7, events, onPick }) {
   // Các ngày có sự kiện (hiện chấm nhỏ)
   const busy = useMemo(() => {
     const set = new Set();
-    events.forEach((s) => occurrencesInRange(s, cells[0], cells[41]).forEach((o) => set.add(o.date)));
+    const lateSet = new Set();
+    events.forEach((s) => occurrencesInRange(s, cells[0], cells[41]).forEach((o) => {
+      set.add(o.date);
+      if (o.date < todayISO && !o.done) lateSet.add(o.date);
+    }));
+    set.late = lateSet;
     return set;
   }, [events, cells]);
   const shift = (n) => setMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
@@ -1548,9 +1558,9 @@ function MiniCalendar({ weekStart, spanDays = 7, events, onPick }) {
           return (
             <button key={iso} type="button" className={cls.join(' ')} onClick={() => onPick(d)}
               aria-current={iso === todayISO ? 'date' : undefined}
-              aria-label={`${fmtDMY(iso)}${has ? ', có lịch' : ''}`}>
+              aria-label={`${fmtDMY(iso)}${has ? ', có lịch' : ''}${busy.late.has(iso) ? ', có việc quá hạn chưa làm' : ''}`}>
               {d.getDate()}
-              {has && <span className="mini-dot" aria-hidden="true" />}
+              {has && <span className={`mini-dot${busy.late.has(iso) ? ' late' : ''}`} aria-hidden="true" />}
             </button>
           );
         })}
@@ -1680,6 +1690,36 @@ function TodayList({ events, now, onOpen }) {
   );
 }
 
+// Các buổi đã qua ngày mà chưa tick (30 ngày gần nhất), mới nhất trước
+function OverdueList({ events, now, onOpen }) {
+  const iso = toISODate(now);
+  const items = useMemo(() => {
+    const to = addDays(parseISODate(iso), -1);
+    const from = addDays(to, -29);
+    const out = [];
+    events.forEach((s) => occurrencesInRange(s, from, to).forEach((o) => { if (!o.done) out.push(o); }));
+    return out.sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime));
+  }, [events, iso]);
+  if (!items.length) return null;
+  const LIMIT = 15;
+  return (
+    <section className="panel overdue-panel">
+      <h3>Quá hạn chưa làm ({items.length})</h3>
+      <ul className="today-list">
+        {items.slice(0, LIMIT).map((o) => (
+          <li key={o.key}>
+            <button type="button" className="today-item overdue" onClick={() => onOpen(o.seriesId, o.date)}>
+              <span className="dot" aria-hidden="true" />
+              <span className="today-main"><span className="today-title">{o.title}</span><span className="today-time">{fmtDM(o.date)} · {o.startTime} – {o.endTime}</span></span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {items.length > LIMIT && <p className="hint">Còn {items.length - LIMIT} buổi quá hạn cũ hơn.</p>}
+    </section>
+  );
+}
+
 function Sidebar({ open, onClose, events, now, weekStart, spanDays, onPickDate, onOpenOccurrence }) {
   return (
     <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Lịch tháng và hôm nay">
@@ -1696,6 +1736,7 @@ function Sidebar({ open, onClose, events, now, weekStart, spanDays, onPickDate, 
           <h3>Hôm nay</h3>
           <TodayList events={events} now={now} onOpen={onOpenOccurrence} />
         </section>
+        <OverdueList events={events} now={now} onOpen={onOpenOccurrence} />
       </div>
     </aside>
   );
