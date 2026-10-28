@@ -32,6 +32,7 @@
   --warning: #9a5a00;
   --warning-soft: #fff1d6;
   --now: #e11d48;
+  --overdue: #d92d20;      --overdue-bg: #ffe0dc;
   --today-bg: rgba(31, 95, 239, 0.06);
 
   --cat-study: #2563eb;    --cat-study-bg: #dce8ff;
@@ -69,6 +70,7 @@
   --warning: #ffc266;
   --warning-soft: #3a2c10;
   --now: #ff4d78;
+  --overdue: #ff6b61;      --overdue-bg: #4d1d24;
   --today-bg: rgba(91, 155, 255, 0.09);
 
   --cat-study: #7aa8ff;    --cat-study-bg: #1b2d5c;
@@ -826,3 +828,28 @@ kbd {
 @media (max-width: 600px) {
   .toolbar { gap: 8px 10px; }
 }
+
+/* ============================================================
+   Quá hạn chưa làm: lịch bôi đỏ, việc cần làm bôi đen
+   ============================================================ */
+.event.overdue { --ev-color: var(--overdue) !important; --ev-bg: var(--overdue-bg) !important; }
+.event.overdue .ev-title { color: var(--overdue); }
+:root[data-theme="dark"] .event.overdue .ev-title { color: #ffd9d5; }
+.ev-late {
+  display: inline-block; margin-right: 4px; padding: 1px 6px; border-radius: 999px;
+  background: var(--overdue); color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .04em;
+}
+.mini-dot.late { background: var(--overdue) !important; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--overdue) 35%, transparent); }
+.today-item.overdue .dot { background: var(--overdue); }
+.today-item.overdue { background: color-mix(in srgb, var(--overdue-bg) 70%, transparent); }
+.today-item.overdue .today-title { color: var(--overdue); }
+:root[data-theme="dark"] .today-item.overdue .today-title { color: #ffd9d5; }
+.overdue-panel > h3 { color: var(--overdue); }
+
+/* Việc cần làm quá 1 ngày chưa làm: viền đen, nhãn "Quá hạn" đen */
+.task-row.overdue { border-color: #000; box-shadow: 0 0 0 1.5px #000, 0 1px 2px rgba(0, 0, 0, .15); }
+:root[data-theme="dark"] .task-row.overdue { border-color: #000; box-shadow: 0 0 0 1.5px #000, 0 0 0 3px rgba(255, 255, 255, .28); background: #080d1f; }
+.task-badge.late { background: #000; color: #fff; box-shadow: 0 0 0 1px rgba(255, 255, 255, .0); }
+:root[data-theme="dark"] .task-badge.late { box-shadow: 0 0 0 1px rgba(255, 255, 255, .5); }
+.task-group.is-overdue h2 { color: var(--text); }
+.task-group.is-overdue h2::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; background: #000; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .5); }
