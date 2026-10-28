@@ -1690,37 +1690,70 @@ function TodayList({ events, now, onOpen }) {
   );
 }
 
-// Các buổi đã qua ngày mà chưa tick (30 ngày gần nhất), mới nhất trước
-function OverdueList({ events, now, onOpen }) {
-  const iso = toISODate(now);
-  const items = useMemo(() => {
-    const to = addDays(parseISODate(iso), -1);
-    const from = addDays(to, -29);
-    const out = [];
-    events.forEach((s) => occurrencesInRange(s, from, to).forEach((o) => { if (!o.done) out.push(o); }));
-    return out.sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime));
-  }, [events, iso]);
-  if (!items.length) return null;
-  const LIMIT = 15;
+// Tiến độ tuần đang xem: số buổi đã tick / số buổi đã bắt đầu (chỉ sự kiện lịch)
+function WeekProgress({ events, weekStart, now }) {
+  const wsKey = toISODate(weekStart);
+  const nowMs = now.getTime();
+  const { started, done } = useMemo(() => {
+    const ws = parseISODate(wsKey);
+    const we = addDays(ws, 6);
+    let st = 0;
+    let dn = 0;
+    events.forEach((s) => occurrencesInRange(s, ws, we).forEach((o) => {
+      if (dateTimeMs(o.date, o.startTime) <= nowMs) { st += 1; if (o.done) dn += 1; }
+    }));
+    return { started: st, done: dn };
+  }, [events, wsKey, nowMs]);
+  const isThisWeek = wsKey === toISODate(startOfWeek(now));
+  const pct = started ? Math.round((done / started) * 100) : 0;
   return (
-    <section className="panel overdue-panel">
-      <h3>Quá hạn chưa làm ({items.length})</h3>
-      <ul className="today-list">
-        {items.slice(0, LIMIT).map((o) => (
-          <li key={o.key}>
-            <button type="button" className="today-item overdue" onClick={() => onOpen(o.seriesId, o.date)}>
-              <span className="dot" aria-hidden="true" />
-              <span className="today-main"><span className="today-title">{o.title}</span><span className="today-time">{fmtDM(o.date)} · {o.startTime} – {o.endTime}</span></span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      {items.length > LIMIT && <p className="hint">Còn {items.length - LIMIT} buổi quá hạn cũ hơn.</p>}
+    <section className="panel progress-panel">
+      <h3>Tiến độ {isThisWeek ? 'tuần này' : 'tuần đang xem'}</h3>
+      {started === 0 ? (
+        <div className="empty-note">Chưa có buổi nào bắt đầu.</div>
+      ) : (
+        <div className="progress-box" role="group" aria-label={`Hoàn thành ${pct}%`}>
+          <div className="progress-pct">{pct}<span>%</span></div>
+          <div className="progress-side">
+            <div className="progress-bar" aria-hidden="true"><i style={{ width: `${pct}%` }} /></div>
+            <div className="progress-sub"><strong>{done}/{started}</strong> buổi đã làm</div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
-function Sidebar({ open, onClose, events, now, weekStart, spanDays, onPickDate, onOpenOccurrence }) {
+// Việc cần làm chưa xong (bấm để mở trang Việc cần làm)
+function TaskPeek({ tasks, now, onOpen }) {
+  const todayISO = toISODate(now);
+  const items = useMemo(() => tasks.filter((t) => !taskDone(t))
+    .sort((a, b) => dateTimeMs(a.date, a.startTime) - dateTimeMs(b.date, b.startTime)), [tasks]);
+  if (!items.length) return null;
+  const LIMIT = 6;
+  return (
+    <section className="panel">
+      <h3>Việc cần làm ({items.length})</h3>
+      <ul className="today-list">
+        {items.slice(0, LIMIT).map((t) => {
+          const late = t.date < todayISO;
+          return (
+            <li key={t.id}>
+              <button type="button" className={`today-item${late ? ' task-late' : ''}`} style={{ '--c': 'var(--primary)' }} onClick={onOpen}>
+                <span className="dot" aria-hidden="true" />
+                <span className="today-main"><span className="today-title">{t.title}</span><span className="today-time">{fmtDM(t.date)} · {t.startTime}</span></span>
+                {late && <span className="task-badge late">Quá hạn</span>}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {items.length > LIMIT && <button type="button" className="month-more" onClick={onOpen}>Xem thêm {items.length - LIMIT} việc</button>}
+    </section>
+  );
+}
+
+function Sidebar({ open, onClose, events, tasks, now, weekStart, spanDays, progressWeek, onPickDate, onOpenOccurrence, onOpenTasks }) {
   return (
     <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Lịch tháng và hôm nay">
       <div className="sidebar-head">
@@ -1736,7 +1769,8 @@ function Sidebar({ open, onClose, events, now, weekStart, spanDays, onPickDate, 
           <h3>Hôm nay</h3>
           <TodayList events={events} now={now} onOpen={onOpenOccurrence} />
         </section>
-        <OverdueList events={events} now={now} onOpen={onOpenOccurrence} />
+        <WeekProgress events={events} weekStart={progressWeek} now={now} />
+        <TaskPeek tasks={tasks} now={now} onOpen={onOpenTasks} />
       </div>
     </aside>
   );
@@ -2697,8 +2731,8 @@ function App() {
       </div>
 
       <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} events={calEvents} now={now} weekStart={span.ws} spanDays={span.n}
-        onPickDate={pickDate}
+      <Sidebar open={sidebarOpen} onClose={() => setPanel(false)} events={calEvents} tasks={taskList} now={now} weekStart={span.ws} spanDays={span.n}
+        progressWeek={weekStart} onOpenTasks={() => goPage('tasks')} onPickDate={pickDate}
         onOpenOccurrence={(id, date) => { openOccurrence(id, date); if (isMobileView()) setSidebarOpen(false); }} />
 
       {taskModal && (taskModal.mode.type === 'new' || data.events.find((x) => x.id === taskModal.mode.seriesId)) && (
